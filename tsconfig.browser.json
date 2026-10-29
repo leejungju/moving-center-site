@@ -9,5 +9,5 @@
     "skipLibCheck": true,
     "types": []
   },
-  "include": ["js/**/*.js"]
+  "include": ["js/**/*.js", "preview/**/*.js"]
 }

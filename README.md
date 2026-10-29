@@ -11,6 +11,7 @@
 | 경로 | 내용 |
 | --- | --- |
 | `index.html`, `style.css`, `js/site.js` | 공개 홈페이지. API 를 불러오지 못하면(GitHub Pages) HTML 문구 그대로 보이고, 후기·문자 견적 양식·카카오톡 버튼은 숨겨집니다. |
+| `preview/` | **미리보기**(가짜 자료로 모든 기능을 눌러 보는 화면). 아래 "미리보기" 참고. 배포 산출물(`dist/`)에는 들어가지 않습니다. |
 | `review/write.html`, `js/review-write.js` | 고객 후기 작성 화면 (`/review/write?t=토큰`) |
 | `admin/index.html`, `js/admin.js` | 관리자 화면 (`/admin`) |
 | `app.css` | 후기 작성·관리자 화면 공통 스타일(큰 글씨, 큰 버튼) |
@@ -21,6 +22,8 @@
 | `wrangler.toml` | Pages 설정(D1 `DB`, R2 `PHOTOS`). 지금은 로컬 전용 가짜 `database_id` |
 | `scripts/build.mjs` | `dist/` 에 정적 파일 모으기 + Functions 묶기 확인 |
 | `scripts/local-server.mjs`, `scripts/screenshots.mjs` | 시험·캡처용 로컬 서버(miniflare), 화면 캡처 |
+| `scripts/static-server.mjs`, `scripts/screenshots-static.mjs` | 시험·캡처용 정적 서버(API 없음, GitHub Pages 처럼 하위 경로로도 열기), 하위 경로·미리보기 화면 캡처 |
+| `scripts/preview.mjs` | 실제 화면 HTML 에서 `preview/` 의 HTML 과 서버 값(`preview/server-values.js`)을 만드는 생성기 |
 | `scripts/test-access.mjs` | **시험 전용** 가짜 Access(실행할 때마다 만드는 시험용 RSA 키로 JWT 서명). 운영 코드는 이 파일을 쓰지 않습니다. |
 | `test/` | 시험(API, 단위, 헤드리스 브라우저) |
 | `docs/screens/` | 로컬 실행 화면 캡처(가짜 시험 데이터) |
@@ -29,12 +32,36 @@
 
 - **문자 견적 문의**: 이름(선택)·출발지·도착지·이사 희망일·이사 종류·메모를 적으면 그 내용이 채워진 문자 앱이 열립니다(`sms:` 링크). 서버로 보내거나 저장하지 않습니다. 받을 번호는 설정값 `sms_number`, 비어 있으면 양식이 숨겨집니다. PC 사용자를 위해 대표번호 전화 안내를 함께 둡니다.
 - **카카오톡 문의**: 설정값 `kakao_channel_id` 가 있으면 `https://pf.kakao.com/{값}/chat` 으로 연결, 없으면 숨김.
-- **고객 후기**: 관리자가 공개한 후기만 최신순으로 보입니다(별명, 이용 서비스, 작성일, 내용, 숨기지 않은 사진, 업체 답변).
+  - 카카오톡 버튼과 문자 양식은 HTML 에서 **숨김이 기본**입니다. 설정값을 정상으로 받았고 형식이 맞을 때만 스크립트가 보이게 하므로, 스크립트·스타일 파일이 실패하거나 늦어도 링크 없는 버튼이 보이지 않습니다.
+  - 「무료 견적 문의」 안내 문구는 실제로 보이는 문의 수단(전화만 / 전화+문자 / 전화+카카오톡 / 셋 다)에 맞춰 바뀝니다. API 를 못 받으면 "전화만" 문구입니다.
+- **고객 후기**: 관리자가 공개한 후기만 최신순으로 보입니다(별명, 이용 서비스, 작성일, 내용, 숨기지 않은 사진, 업체 답변). 후기 API 응답을 받지 못하면 섹션 전체를 숨기고, 받았는데 공개 후기가 0건이면 제목과 "아직 등록된 후기가 없습니다."를 보여 줍니다.
 - **후기 작성(로그인 없음)**: 관리자가 만든 1회용 링크로만 씁니다. 토큰은 256비트 무작위 값, DB 에는 SHA-256 해시만 저장, 30일 유효, 1건 제출하면 사용 완료. 제출된 후기는 "승인 대기"로 저장됩니다.
 - **사진**: 브라우저에서 긴 변 1600px 이하 JPEG 로 다시 그려 위치 정보 등을 없앤 뒤 올립니다. 장당 500KB 를 넘으면 품질을 0.85 에서 0.5 까지 낮추고, 그래도 넘으면 긴 변을 1280px, 1024px 로 줄여 다시 그립니다(그래도 넘으면 "사진이 너무 큽니다" 안내). 상한 값은 `src/limits.ts` 한 곳에서 정하고 작성 화면은 `/api/review/check` 응답으로 받습니다. 서버는 JPEG 시작 바이트, 장당 500KB(요청 전체 3 x 500KB + 512KB, 스트림으로 세며 넘으면 바로 413), 구간 종류를 검사해 APP0(미리보기 없는 JFIF 머리말)과 영상 데이터 구간만 받고 APP1~APP15(EXIF·XMP·IPTC·ICC 등)·COM(주석)·EOI 뒤 데이터가 있으면 거부합니다. R2 사진은 직접 공개하지 않고, 공개된 후기의 숨기지 않은 사진만 `/api/photos/{id}` 로 내보냅니다.
 - **관리자 화면** `/admin`: 로그인은 Cloudflare Access(이메일로 받는 일회용 PIN)가 맡고, 화면에는 아이디·비밀번호 입력 칸이 없습니다. 후기 관리(승인 대기/공개 중/숨김, 공개·숨기기·삭제·답변, 사진 숨기기·삭제), 후기 요청 링크 만들기·복사, 홈페이지 문구, 연락처 설정, 최근 기록(모든 관리자 행동).
   - 첫 화면의 큰 제목(`名品 포장이사공사 대한익스프레스`)은 상호이므로 고칠 수 없습니다. "첫 화면 제목"으로는 그 위의 짧은 문구(`전국 포장이사 · 무료 방문 견적`)를 고칩니다.
 - **공개 후기 양식(토큰 없이 누구나)**: 기본으로 꺼져 있습니다. 아래 "공개 후기 양식 켜기" 참고.
+- 관리자 화면(`admin/`)과 후기 작성 화면(`review/`)은 CSS·스크립트를 상대 주소(`../app.css`, `../js/...`)로 불러오므로 맨 앞 경로(Cloudflare)와 하위 경로(GitHub Pages) 양쪽에서 열립니다. 하위 경로에는 API 가 없으므로 "이 주소에서는 사용할 수 없습니다"만 보입니다.
+
+## 미리보기 (가짜 자료로 모든 기능 눌러 보기)
+
+실제 고객이 들어오기 전에 사업주가 모든 기능을 직접 눌러 보고 판단할 수 있도록 만든 화면입니다.
+
+| 화면 | 주소 (GitHub Pages) |
+| --- | --- |
+| 공개 페이지 | https://leejungju.github.io/moving-center-site/preview/ |
+| 관리자 화면 | https://leejungju.github.io/moving-center-site/preview/admin/ |
+| 후기 작성 화면 | https://leejungju.github.io/moving-center-site/preview/review/write.html (관리자 화면에서 만든 링크로 엽니다) |
+
+- 화면 맨 위에 "미리보기 화면입니다. 실제 고객 후기·연락처가 아니며, 입력한 내용은 이 브라우저에만 저장됩니다." 띠가 붙어 있고, 띠에서 세 화면으로 오가거나 **[미리보기 초기화]** 로 처음 상태로 되돌립니다.
+- 실제 화면과 **같은 HTML·CSS·JS** 를 씁니다. 다른 점은 서버 API 대신 `preview/preview.js` 의 가짜 API 가 답하고, 자료를 **이 브라우저의 localStorage 에만** 저장한다는 것뿐입니다(막힌 브라우저에서는 메모리에만 두고 띠에 안내가 나옵니다). 다른 사람·다른 기기와 공유되지 않으며 서버로 아무것도 보내지 않습니다.
+- 처음 상태: 공개 후기 4건(별명 "예시 고객1~4", 사진 2건은 사람이 없는 직접 그린 그림, 업체 답변 2건), 승인 대기 2건, 가짜 카카오톡 채널(`_example`)·문자 번호(010-0000-0000). 후기 카드마다 "예시" 표시가 붙습니다.
+- 사용법
+  1. 공개 페이지에서 카카오톡 버튼을 누르면 "미리보기: 실제로는 카카오톡 채널 채팅이 열립니다." 안내만 나옵니다. 문자 양식을 보내면 실제로 보내질 문자 내용이 화면에 나오고 문자 앱은 열리지 않습니다.
+  2. 관리자 화면은 로그인 없이 열립니다(실제로는 관리자 이메일로 받은 6자리 숫자로 로그인합니다). 승인 대기 후기를 공개·숨기기·삭제하고, 답변을 쓰고, 사진을 숨기거나 지우고, 홈페이지 문구·연락처를 바꾸고, 최근 기록을 볼 수 있습니다. 바꾼 내용은 미리보기 공개 페이지에 바로 반영됩니다(다른 탭에 열려 있으면 자동으로 다시 불러옵니다).
+  3. 「후기 요청 링크」에서 링크를 만들고 "이 링크로 후기 작성 화면 열기"를 누르면 후기 작성 화면이 열립니다. 사진은 실제처럼 줄이고 메타데이터를 지운 뒤 브라우저에만 저장되며, 보내면 관리자 화면의 승인 대기에 나타납니다. 링크는 실제와 같이 한 번만 쓸 수 있고 30일이 지나면 쓸 수 없습니다("이 링크를 사용 기간(30일)이 지난 링크로 만들기" 버튼으로 바로 확인할 수 있습니다).
+- 모든 미리보기 html 에 `noindex` 가 붙어 검색에 나오지 않습니다.
+- **배포 산출물에서 빠집니다**: `npm run build` 가 만드는 Cloudflare 배포 폴더 `dist/` 에는 `preview/` 가 들어가지 않습니다(`scripts/build.mjs` 가 확인하고, 시험도 확인합니다). 실제 화면(`index.html`, `admin/`, `review/`)과 서버 코드(`src/`, `functions/`)는 `preview/` 의 어떤 파일도 불러오지 않습니다. 실제 JS 는 미리보기 페이지가 명시적으로 넘겨주는 설정(`<html data-preview="1">` 과 `window.movingCenterPreview`)이 있을 때만 사진 주소·카카오 버튼·문자 보내기를 미리보기용으로 바꾸고, 서버 요청 주소와 관리자 확인은 그대로입니다.
+- `preview/` 의 HTML 은 실제 HTML 에서 `npm run preview` 로 만듭니다. 실제 HTML 이나 `src/` 의 문구 기본값·사진 상한을 바꾸면 `npm run preview` 를 다시 실행하세요(`npm test` 가 최신인지 확인합니다).
 
 ## 로컬 실행
 
@@ -64,9 +91,11 @@ npm run dev
 | `npm run lint` | ESLint (`innerHTML` 등 사용 금지 규칙 포함) |
 | `npm run build` | `dist/` 생성, 인라인 스크립트 검사, Functions 묶기 확인 |
 | `npm test` | build 후 vitest: API 시험(miniflare 안의 실제 워커 코드, 메모리 D1·R2, 외부 요청 가로채기), 단위 시험, 헤드리스 브라우저 시험 |
-| `npx html-validate index.html admin/index.html review/write.html` | HTML 검사 |
+| `npm run preview` | 실제 HTML 에서 미리보기 HTML(`preview/`) 다시 만들기 |
+| `npx html-validate index.html admin/index.html review/write.html preview/index.html preview/admin/index.html preview/review/write.html` | HTML 검사 |
 | `npm audit` | 의존성 취약점 검사 |
 | `npm run screenshots` | 가짜 시험 데이터로 `docs/screens/` 캡처 |
+| `npm run screenshots:static` | 하위 경로 실제 화면과 미리보기 화면을 `docs/screens/` 에 캡처 |
 
 브라우저 시험은 Playwright(Chromium)를 씁니다. 처음이면 `npx playwright install chromium` 이 필요할 수 있습니다.
 

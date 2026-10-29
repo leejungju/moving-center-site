@@ -11,7 +11,7 @@ export default tseslint.config(
     languageOptions: { globals: { ...globals.worker } },
   },
   {
-    files: ["js/**/*.js"],
+    files: ["js/**/*.js", "preview/**/*.js"],
     languageOptions: { sourceType: "script", globals: { ...globals.browser } },
     rules: {
       // 사용자 입력은 textContent 로만 넣는다.
@@ -31,7 +31,7 @@ export default tseslint.config(
   },
   {
     // page.evaluate 안의 코드는 브라우저에서 실행된다.
-    files: ["scripts/screenshots.mjs"],
+    files: ["scripts/screenshots.mjs", "scripts/screenshots-static.mjs"],
     languageOptions: { globals: { ...globals.node, ...globals.browser } },
   },
 );

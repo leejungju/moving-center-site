@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 600" role="img" aria-label="정리된 빈 방 그림(예시)">
+  <rect width="800" height="600" fill="#fff6e6"/>
+  <rect y="420" width="800" height="180" fill="#d8b98f"/>
+  <rect x="520" y="90" width="190" height="170" fill="#bfe0ff" stroke="#8a6d4b" stroke-width="8"/>
+  <path d="M615 90 v170 M520 175 h190" stroke="#8a6d4b" stroke-width="6"/>
+  <rect x="90" y="300" width="330" height="90" rx="18" fill="#5f8fd9"/>
+  <rect x="90" y="250" width="330" height="70" rx="18" fill="#7aa5e6"/>
+  <rect x="70" y="290" width="40" height="110" rx="12" fill="#4b78bd"/>
+  <rect x="400" y="290" width="40" height="110" rx="12" fill="#4b78bd"/>
+  <rect x="110" y="390" width="14" height="40" fill="#6b5236"/><rect x="386" y="390" width="14" height="40" fill="#6b5236"/>
+  <rect x="520" y="330" width="170" height="20" fill="#8a6d4b"/>
+  <rect x="535" y="350" width="14" height="80" fill="#8a6d4b"/><rect x="661" y="350" width="14" height="80" fill="#8a6d4b"/>
+  <rect x="580" y="290" width="50" height="40" fill="#7bbf7f"/>
+  <text x="400" y="560" font-family="sans-serif" font-size="34" font-weight="700" fill="#5a4630" text-anchor="middle">예시 그림 · 정리를 마친 방</text>
+</svg>

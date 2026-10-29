@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 600" role="img" aria-label="이삿짐 트럭 그림(예시)">
+  <rect width="800" height="600" fill="#e3f4ea"/>
+  <rect y="430" width="800" height="170" fill="#9aa3ad"/>
+  <rect y="505" width="800" height="10" fill="#f4f4f4"/>
+  <rect x="90" y="190" width="420" height="230" rx="10" fill="#ffffff" stroke="#1a5fd6" stroke-width="8"/>
+  <rect x="90" y="330" width="420" height="30" fill="#1a5fd6"/>
+  <path d="M510 250 h120 l70 90 v80 h-190 z" fill="#1a5fd6"/>
+  <path d="M535 270 h85 l48 62 h-133 z" fill="#bfe0ff"/>
+  <circle cx="200" cy="430" r="46" fill="#2b2f36"/><circle cx="200" cy="430" r="18" fill="#c8ccd2"/>
+  <circle cx="600" cy="430" r="46" fill="#2b2f36"/><circle cx="600" cy="430" r="18" fill="#c8ccd2"/>
+  <text x="300" y="290" font-family="sans-serif" font-size="40" font-weight="900" fill="#1a5fd6" text-anchor="middle">이사</text>
+  <text x="400" y="570" font-family="sans-serif" font-size="34" font-weight="700" fill="#2b2f36" text-anchor="middle">예시 그림 · 이삿짐 차량</text>
+</svg>

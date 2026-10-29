@@ -1,0 +1,97 @@
+<!DOCTYPE html>
+<!-- 미리보기 화면입니다. scripts/preview.mjs 가 review/write.html 에서 만듭니다. 직접 고치지 말고 npm run preview 를 실행하세요. -->
+<html lang="ko" data-preview="1" data-preview-page="review">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex, nofollow">
+  <meta name="referrer" content="no-referrer">
+  <title>[미리보기] 고객 후기 작성 | 名品 포장이사공사 대한익스프레스</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@400;500;700;900&amp;display=swap">
+  <!-- 맨 앞 경로(Cloudflare)와 하위 경로(GitHub Pages) 양쪽에서 열리도록 상대 주소를 쓴다. -->
+  <link rel="stylesheet" href="../../app.css">
+  <link rel="stylesheet" href="../preview.css">
+  <script src="../server-values.js" defer></script>
+  <script src="../preview.js" defer></script>
+  <script src="../../js/review-write.js" defer></script>
+</head>
+<body>
+  <section id="preview-bar" class="preview-bar" aria-label="미리보기 안내">
+    <p><strong>미리보기 화면입니다.</strong> 실제 고객 후기·연락처가 아니며, 입력한 내용은 이 브라우저에만 저장됩니다.</p>
+    <p>후기 작성 화면은 미리보기 관리자 화면의 「후기 요청 링크」에서 만든 링크로 열어 보세요.</p>
+    <p id="preview-storage-warn" class="preview-bar-warn" hidden>이 브라우저에 저장할 수 없어, 새로고침하거나 다른 화면으로 옮기면 입력한 내용이 사라집니다.</p>
+    <nav class="preview-bar-nav" aria-label="미리보기 화면 이동">
+      <a href="../index.html">공개 페이지</a>
+      <a href="../admin/">관리자 화면</a>
+      <a href="../review/write.html" aria-current="page">후기 작성 화면</a>
+      <button id="preview-reset" type="button" class="preview-reset">미리보기 초기화</button>
+    </nav>
+  </section>
+  <header class="app-header">
+    <span class="logo-mark">名品</span>
+    <span class="app-header-title">대한익스프레스 고객 후기</span>
+  </header>
+
+  <main class="app-main">
+    <h1 class="page-title">이사 후기 남기기</h1>
+    <p id="status" class="notice" role="status">링크를 확인하고 있습니다…</p>
+
+    <form id="review-form" class="panel" novalidate hidden>
+      <p class="lead">이용해 주셔서 감사합니다. 남겨 주신 후기는 업체가 확인한 뒤 홈페이지에 올라갑니다.</p>
+
+      <div class="field">
+        <label for="nickname">별명</label>
+        <p class="field-help" id="nickname-help">2~10자로 적어 주세요. 실명이나 전화번호는 적지 마세요.</p>
+        <input id="nickname" name="nickname" type="text" minlength="2" maxlength="10" autocomplete="off" aria-describedby="nickname-help" required>
+      </div>
+
+      <fieldset class="field">
+        <legend>이용하신 서비스</legend>
+        <div class="choice-grid">
+          <label class="choice"><input type="radio" name="service" value="가정이사" required> 가정이사</label>
+          <label class="choice"><input type="radio" name="service" value="원룸이사"> 원룸이사</label>
+          <label class="choice"><input type="radio" name="service" value="사무실이사"> 사무실이사</label>
+          <label class="choice"><input type="radio" name="service" value="보관이사"> 보관이사</label>
+        </div>
+      </fieldset>
+
+      <div class="field">
+        <label for="content">후기 내용</label>
+        <p class="field-help" id="content-help">10~1000자. 다른 사람의 이름, 전화번호, 집 주소는 적지 마세요.</p>
+        <textarea id="content" name="content" rows="7" minlength="10" maxlength="1000" aria-describedby="content-help" required></textarea>
+        <span id="content-count" class="counter">0 / 1000</span>
+      </div>
+
+      <div class="field">
+        <span class="field-label" id="photo-label">사진 (선택, 3장까지)</span>
+        <p class="field-help">사진은 위치 정보 등 사진 정보를 지운 뒤 올라갑니다. 얼굴, 집 호수, 차량 번호가 보이지 않는 사진을 골라 주세요.</p>
+        <div id="photo-previews" class="photo-previews"></div>
+        <button id="photo-button" type="button" class="btn btn-secondary">사진 고르기</button>
+        <input id="photo-input" type="file" accept="image/*" multiple hidden aria-labelledby="photo-label">
+      </div>
+
+      <section class="privacy" aria-labelledby="privacy-title">
+        <h2 id="privacy-title">개인정보 수집·이용 안내</h2>
+        <ul>
+          <li>수집 항목: 별명, 이용 서비스, 후기 내용, 사진(선택)</li>
+          <li>이용 목적: 홈페이지 고객 후기 게시</li>
+          <li>공개 범위: 업체 확인 후 별명·이용 서비스·작성일·내용·사진이 홈페이지에 공개됩니다.</li>
+          <li id="privacy-open" hidden>반복 작성을 막기 위해 접속 IP를 알아볼 수 없게 바꾼 값(해시)으로 하루 동안 보관합니다.</li>
+          <li>보유 기간: 후기가 삭제될 때까지. 삭제를 원하시면 대표전화 1661-7624로 연락해 주세요.</li>
+          <li>동의하지 않으실 수 있으며, 동의하지 않으면 후기를 남길 수 없습니다.</li>
+        </ul>
+      </section>
+      <div class="field">
+        <label class="check"><input id="consent" name="consent" type="checkbox" value="yes" required> 위 개인정보 수집·이용 안내를 읽었고 동의합니다.</label>
+      </div>
+
+      <div id="turnstile-box" class="field" hidden></div>
+
+      <p id="form-error" class="notice notice-error" role="alert" hidden></p>
+      <button id="submit-button" type="submit" class="btn btn-primary btn-block">후기 보내기</button>
+    </form>
+  </main>
+</body>
+</html>
