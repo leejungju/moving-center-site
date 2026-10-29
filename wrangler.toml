@@ -1,0 +1,16 @@
+# Cloudflare Pages 설정 (지금은 로컬 실행 전용)
+# 실제 배포 전에 database_id 를 Cloudflare 에서 만든 D1 의 ID 로 바꿔야 한다. README 참고.
+name = "moving-center-site"
+pages_build_output_dir = "dist"
+compatibility_date = "2025-09-01"
+send_metrics = false
+
+[[d1_databases]]
+binding = "DB"
+database_name = "moving-center-db"
+database_id = "00000000-0000-0000-0000-000000000000"
+migrations_dir = "migrations"
+
+[[r2_buckets]]
+binding = "PHOTOS"
+bucket_name = "moving-center-review-photos"

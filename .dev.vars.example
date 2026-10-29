@@ -1,0 +1,8 @@
+# 로컬 실행용 예시 값입니다. 모두 가짜 값입니다.
+#   cp .dev.vars.example .dev.vars
+# 아래 해시는 시험용 비밀번호 "test-password-change-me" 의 해시입니다.
+# 실제 운영 값은 이 파일이 아니라 Cloudflare 대시보드의 환경 변수(비밀)로 넣습니다. README 참고.
+ADMIN_ID=test-admin
+ADMIN_PASSWORD_HASH=pbkdf2-sha256:600000:E-3A8WCwWrpUSc3-kvLm7g:2gKzZdcV_jgsbIqp0jgQZ7qIRmRe86k68q2ns8GvwJU
+# 공개 후기 양식을 시험할 때만 필요. Cloudflare 공식 시험용 비밀 키(항상 통과)입니다.
+TURNSTILE_SECRET_KEY=1x0000000000000000000000000000000AA
