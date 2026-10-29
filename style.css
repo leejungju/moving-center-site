@@ -39,6 +39,11 @@ img {
   max-width: 100%;
 }
 
+/* hidden 속성이 붙은 요소는 화면 폭·다른 규칙과 상관없이 항상 숨긴다(카카오톡 버튼·문자 양식 등). */
+[hidden] {
+  display: none !important;
+}
+
 a {
   color: inherit;
   text-decoration: none;
@@ -593,6 +598,16 @@ h3 {
   display: grid;
   grid-template-columns: 1fr;
   gap: 16px;
+}
+
+.review-empty {
+  margin: 0;
+  padding: 28px 20px;
+  border: 1px dashed var(--line);
+  border-radius: var(--radius);
+  background: var(--white);
+  color: var(--muted);
+  text-align: center;
 }
 
 .review-card {
