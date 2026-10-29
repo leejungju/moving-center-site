@@ -4,6 +4,16 @@
 
 (function () {
   /**
+   * 미리보기 페이지만 넘겨주는 설정. 실제 페이지에는 없으므로 null 이고, 그때는 동작이 바뀌지 않는다.
+   * @type {{ photoSrc?: (url: string) => string } | null}
+   */
+  const preview = (function () {
+    const hooks = /** @type {any} */ (window).movingCenterPreview;
+    if (document.documentElement.getAttribute("data-preview") !== "1" || !hooks || typeof hooks !== "object") return null;
+    return hooks;
+  })();
+
+  /**
    * @param {string} id
    * @returns {HTMLElement}
    */
@@ -267,7 +277,7 @@
       r.photos.forEach(function (p, i) {
         const box = el("div", { className: "admin-photo" + (p.hidden ? " is-hidden" : "") });
         const img = /** @type {HTMLImageElement} */ (el("img"));
-        img.src = p.url;
+        img.src = preview && typeof preview.photoSrc === "function" ? preview.photoSrc(p.url) : p.url;
         img.alt = r.nickname + " 고객 후기 사진 " + (i + 1);
         img.loading = "lazy";
         box.appendChild(img);

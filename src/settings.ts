@@ -18,7 +18,7 @@ export const TEXT_FIELDS: readonly TextField[] = [
   { key: "service_oneroom_desc", label: "원룸이사 설명", max: 150, default: "1인 가구·소형 이사. 짐 양에 맞는 차량으로 부담 없이 이사할 수 있습니다." },
   { key: "service_office_desc", label: "사무실이사 설명", max: 150, default: "사무용 가구, PC, 서류 등 업무 공간 이전. 업무 공백을 줄이도록 일정을 협의합니다." },
   { key: "service_storage_desc", label: "보관이사 설명", max: 150, default: "입주 날짜가 맞지 않을 때 짐을 보관했다가 원하는 날 새 집으로 옮겨 드립니다." },
-  { key: "step1_desc", label: "이용 절차 1단계 (문의) 설명", max: 150, default: "전화 또는 견적 문의 양식으로 이사 일정과 지역을 알려 주세요." },
+  { key: "step1_desc", label: "이용 절차 1단계 (문의) 설명", max: 150, default: "전화나 홈페이지 문의로 이사 일정과 지역을 알려 주세요." },
   { key: "step2_desc", label: "이용 절차 2단계 (방문 견적) 설명", max: 150, default: "담당자가 방문해 짐의 양과 현장 여건을 확인하고 견적을 안내합니다." },
   { key: "step3_desc", label: "이용 절차 3단계 (계약) 설명", max: 150, default: "작업 범위와 비용, 일정을 확인한 뒤 계약을 진행합니다." },
   { key: "step4_desc", label: "이용 절차 4단계 (이사 당일) 설명", max: 150, default: "약속한 시간에 도착해 포장, 운반, 배치를 진행합니다." },

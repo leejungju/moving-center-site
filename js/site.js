@@ -4,10 +4,22 @@
 // - 문자 견적 문의 양식(sms: 링크, 서버로 보내지 않음)
 // - 고객 후기 목록
 // API 를 불러오지 못하면(예: GitHub Pages) HTML 에 적힌 문구를 그대로 두고, 후기·문자 양식·카카오 버튼은 숨긴 채로 둔다.
+// 카카오 버튼과 문자 양식은 HTML 에서 숨김이 기본이고, 설정값을 받았고 형식이 맞을 때만 보이게 한다.
 // 사용자 입력과 서버 값은 textContent 로만 화면에 넣는다.
 "use strict";
 
 (function () {
+  /**
+   * 미리보기 페이지만 넘겨주는 설정. 실제 페이지에는 없으므로 null 이고, 그때는 아래 동작이 바뀌지 않는다.
+   * 미리보기는 <html data-preview="1"> 과 window.movingCenterPreview 를 둘 다 둔다.
+   * @type {{ photoSrc?: (url: string) => string, openKakao?: (url: string) => void, openSms?: (number: string, body: string) => void } | null}
+   */
+  const preview = (function () {
+    const hooks = /** @type {any} */ (window).movingCenterPreview;
+    if (document.documentElement.getAttribute("data-preview") !== "1" || !hooks || typeof hooks !== "object") return null;
+    return hooks;
+  })();
+
   /**
    * @param {string} id
    * @returns {HTMLElement}
@@ -94,20 +106,33 @@
 
   /**
    * @param {string} channelId
+   * @returns {boolean} 버튼을 보이게 했는지
    */
   function setupKakao(channelId) {
-    if (!/^_[A-Za-z0-9]{2,30}$/.test(channelId)) return;
+    if (!/^_[A-Za-z0-9]{2,30}$/.test(channelId)) return false;
     const link = /** @type {HTMLAnchorElement} */ (byId("kakao-chat"));
-    link.href = "https://pf.kakao.com/" + encodeURIComponent(channelId) + "/chat";
+    const url = "https://pf.kakao.com/" + encodeURIComponent(channelId) + "/chat";
+    link.href = url;
+    link.target = "_blank";
+    link.rel = "noopener noreferrer";
+    if (preview && typeof preview.openKakao === "function") {
+      const openKakao = preview.openKakao;
+      link.addEventListener("click", function (event) {
+        event.preventDefault();
+        openKakao(url);
+      });
+    }
     link.hidden = false;
+    return true;
   }
 
   /**
    * @param {string} number
+   * @returns {boolean} 양식을 보이게 했는지
    */
   function setupSmsForm(number) {
     const digits = number.replace(/\D/g, "");
-    if (!/^010\d{8}$/.test(digits)) return;
+    if (!/^010\d{8}$/.test(digits)) return false;
     const form = /** @type {HTMLFormElement} */ (byId("sms-form"));
     const error = byId("sms-error");
     form.hidden = false;
@@ -137,8 +162,29 @@
       lines.push("이사 종류: " + field("kind"));
       const memo = field("memo");
       if (memo) lines.push("메모: " + memo);
+      if (preview && typeof preview.openSms === "function") {
+        preview.openSms(digits, lines.join("\n"));
+        return;
+      }
       window.location.href = "sms:" + digits + "?body=" + encodeURIComponent(lines.join("\n"));
     });
+    return true;
+  }
+
+  /** 실제로 보이는 문의 수단에 맞춘 「무료 견적 문의」 안내 문구 */
+  const QUOTE_DESC = {
+    phone: "전화로 바로 문의해 주세요. 이사 일정과 지역을 알려 주시면 견적을 안내해 드립니다.",
+    sms: "전화로 바로 문의하시거나, 휴대폰에서는 문자로 견적을 문의하실 수 있습니다.",
+    kakao: "전화로 바로 문의하시거나, 카카오톡으로 견적을 문의하실 수 있습니다.",
+    all: "전화로 바로 문의하시거나, 카카오톡 또는 휴대폰 문자로 견적을 문의하실 수 있습니다.",
+  };
+
+  /**
+   * @param {boolean} kakao
+   * @param {boolean} sms
+   */
+  function updateQuoteDesc(kakao, sms) {
+    byId("quote-desc").textContent = kakao && sms ? QUOTE_DESC.all : kakao ? QUOTE_DESC.kakao : sms ? QUOTE_DESC.sms : QUOTE_DESC.phone;
   }
 
   // ---------- 고객 후기 ----------
@@ -167,7 +213,7 @@
       review.photos.forEach(function (photo, i) {
         if (!/^\/api\/photos\/[0-9a-f]{32}$/.test(photo.url)) return;
         const img = /** @type {HTMLImageElement} */ (el("img"));
-        img.src = photo.url;
+        img.src = preview && typeof preview.photoSrc === "function" ? preview.photoSrc(photo.url) : photo.url;
         img.alt = review.nickname + " 고객님 후기 사진 " + (i + 1);
         img.loading = "lazy";
         img.decoding = "async";
@@ -203,8 +249,14 @@
     }
 
     const first = await getJson("/api/reviews");
-    if (!Array.isArray(first.reviews) || first.reviews.length === 0) return;
-    append(first);
+    // 응답 모양이 다르면 받지 못한 것으로 보고 섹션을 숨긴 채로 둔다.
+    if (!Array.isArray(first.reviews)) throw new Error("bad response");
+    if (first.reviews.length === 0) {
+      byId("review-empty").hidden = false;
+      more.hidden = true;
+    } else {
+      append(first);
+    }
     section.hidden = false;
     byId("nav-reviews").hidden = false;
 
@@ -225,11 +277,12 @@
   getJson("/api/settings")
     .then(function (data) {
       if (data.texts && typeof data.texts === "object") applyTexts(data.texts);
-      if (typeof data.kakaoChannelId === "string") setupKakao(data.kakaoChannelId);
-      if (typeof data.smsNumber === "string") setupSmsForm(data.smsNumber);
+      const kakao = typeof data.kakaoChannelId === "string" && setupKakao(data.kakaoChannelId);
+      const sms = typeof data.smsNumber === "string" && setupSmsForm(data.smsNumber);
+      updateQuoteDesc(kakao, sms);
     })
     .catch(function () {
-      // API 가 없으면 HTML 문구를 그대로 쓴다.
+      // API 가 없으면 HTML 문구를 그대로 쓴다(카카오·문자는 숨긴 채, 안내 문구는 전화만).
     });
 
   loadReviews().catch(function () {
