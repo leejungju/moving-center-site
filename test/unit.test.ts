@@ -1,42 +1,26 @@
-import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { parsePasswordHash, pbkdf2Sha256, pbkdf2Sha256Manual, verifyPassword } from "../src/crypto";
+import { accessConfig } from "../src/auth";
 import { checkJpeg } from "../src/jpeg";
 import { TEXT_FIELDS } from "../src/settings";
 import { fakeJpeg } from "./helpers";
 
-const enc = new TextEncoder();
-const hex = (b: Uint8Array) => Buffer.from(b).toString("hex");
-
-describe("PBKDF2-HMAC-SHA256", () => {
-  it("RFC 7914 시험 벡터와 같다(직접 구현)", async () => {
-    expect(hex(await pbkdf2Sha256Manual(enc.encode("passwd"), enc.encode("salt"), 1))).toBe(
-      "55ac046e56e3089fec1691c22544b605f94185216dde0465e68b9d57c20dacbc",
-    );
-    expect(hex(await pbkdf2Sha256Manual(enc.encode("Password"), enc.encode("NaCl"), 80000))).toBe(
-      "4ddcd8f60b98be21830cee5ef22701f9641a4418d04c0414aeff08876b34ab56",
-    );
+describe("Access 설정값 형식", () => {
+  const good = { CF_ACCESS_TEAM_DOMAIN: "test-team.cloudflareaccess.com", CF_ACCESS_AUD: "a".repeat(64), ADMIN_EMAIL: "admin@example.com" };
+  const env = (over: Record<string, string | undefined>) => ({ DB: null, PHOTOS: null, ...good, ...over }) as never;
+  it("세 값이 모두 맞으면 설정을 돌려준다", () => {
+    expect(accessConfig(env({}))).toEqual({ teamDomain: "test-team.cloudflareaccess.com", aud: "a".repeat(64), adminEmail: "admin@example.com" });
+    expect(accessConfig(env({ ADMIN_EMAIL: " Admin@Example.com " }))?.adminEmail).toBe("admin@example.com");
   });
-
-  it("직접 구현과 Web Crypto 결과가 같다(64바이트보다 긴 비밀번호 포함)", async () => {
-    for (const password of ["짧은비번", "x".repeat(64), "긴비밀번호".repeat(20)]) {
-      const salt = crypto.getRandomValues(new Uint8Array(16));
-      expect(hex(await pbkdf2Sha256Manual(enc.encode(password), salt, 1000))).toBe(hex(await pbkdf2Sha256(enc.encode(password), salt, 1000)));
+  it("팀 도메인은 <이름>.cloudflareaccess.com 형식만 받는다", () => {
+    for (const d of ["", "cloudflareaccess.com", "evil.example.com", "a.cloudflareaccess.com.evil.example", "a.b.cloudflareaccess.com", "A.cloudflareaccess.com", "https://a.cloudflareaccess.com", "a.cloudflareaccess.com/x", "a.cloudflareaccess.com:443", "a.cloudflareaccess.com@evil.example", "a_b.cloudflareaccess.com"]) {
+      expect(accessConfig(env({ CF_ACCESS_TEAM_DOMAIN: d })), d).toBeNull();
     }
   });
-
-  it("scripts/hash-password.mjs 가 만든 해시(600000회)로 검증된다", async () => {
-    const hash = execFileSync(process.execPath, ["scripts/hash-password.mjs"], { input: "test-password-5678\n", encoding: "utf8" }).trim();
-    expect(hash).toMatch(/^pbkdf2-sha256:600000:[A-Za-z0-9_-]{22}:[A-Za-z0-9_-]{43}$/);
-    expect(await verifyPassword("test-password-5678", hash)).toBe(true);
-    expect(await verifyPassword("test-password-5679", hash)).toBe(false);
-  });
-
-  it("반복 횟수가 600000 보다 적거나 형식이 틀린 해시는 받지 않는다", async () => {
-    expect(parsePasswordHash("pbkdf2-sha256:1000:AAAAAAAAAAAAAAAAAAAAAA:" + "A".repeat(43))).toBeNull();
-    expect(parsePasswordHash("sha256:abc")).toBeNull();
-    expect(await verifyPassword("", "")).toBe(false);
+  it("AUD 는 64자리 16진수, 관리자 이메일은 1개만", () => {
+    for (const over of [{ CF_ACCESS_AUD: "a".repeat(63) }, { CF_ACCESS_AUD: "g".repeat(64) }, { CF_ACCESS_AUD: undefined }, { ADMIN_EMAIL: "a@example.com,b@example.com" }, { ADMIN_EMAIL: "a@example.com b@example.com" }, { ADMIN_EMAIL: "admin" }, { ADMIN_EMAIL: undefined }]) {
+      expect(accessConfig(env(over)), JSON.stringify(over)).toBeNull();
+    }
   });
 });
 
@@ -45,13 +29,32 @@ describe("JPEG 검사", () => {
     expect(checkJpeg(fakeJpeg())).toBe("ok");
   });
   it("EXIF(APP1) 구간이 있으면 거부", () => {
-    expect(checkJpeg(fakeJpeg({ exif: true }))).toBe("has_exif");
+    expect(checkJpeg(fakeJpeg({ exif: true }))).toBe("has_metadata");
+  });
+  it("APP2~APP15, COM, 모르는 구간은 모두 거부하고 영상 구간(DQT·DHT·SOF·DRI)은 통과", () => {
+    for (let marker = 0xe1; marker <= 0xef; marker++) {
+      expect(checkJpeg(fakeJpeg({ segment: { marker, payload: [1, 2, 3] } })), marker.toString(16)).toBe("has_metadata");
+    }
+    for (const marker of [0xfe, 0xf0, 0xfd, 0xc8, 0xde, 0xdf, 0x02]) {
+      expect(checkJpeg(fakeJpeg({ segment: { marker, payload: [1, 2, 3] } })), marker.toString(16)).toBe("has_metadata");
+    }
+    for (const marker of [0xdb, 0xc4, 0xc0, 0xc2, 0xdd]) {
+      expect(checkJpeg(fakeJpeg({ segment: { marker, payload: [0, 4] } })), marker.toString(16)).toBe("ok");
+    }
+  });
+  it("APP0 는 JFIF 머리말만 받는다(JFXX 등은 거부)", () => {
+    const base = fakeJpeg();
+    const jfxx = new Uint8Array(base);
+    jfxx.set([0x4a, 0x46, 0x58, 0x58], 6); // "JFXX"
+    expect(checkJpeg(jfxx)).toBe("has_metadata");
+    const short = new Uint8Array([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x04, 0x4a, 0x46, 0xff, 0xd9]);
+    expect(checkJpeg(short)).toBe("has_metadata");
   });
   it("압축 데이터 뒤에 나오는 APP1 도 찾아낸다", () => {
     const base = fakeJpeg();
     const app1 = [0xff, 0xe1, 0x00, 0x08, 0x45, 0x78, 0x69, 0x66, 0x00, 0x00];
     const sneaky = new Uint8Array([...base.slice(0, -2), ...app1, 0xff, 0xd9]);
-    expect(checkJpeg(sneaky)).toBe("has_exif");
+    expect(checkJpeg(sneaky)).toBe("has_metadata");
   });
   it("JPEG 시작 바이트가 아니면 거부", () => {
     expect(checkJpeg(new Uint8Array([0x89, 0x50, 0x4e, 0x47]))).toBe("not_jpeg");

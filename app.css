@@ -49,6 +49,7 @@ h3 {
 
 .app-header {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 10px;
   padding: 12px 16px;
@@ -58,6 +59,7 @@ h3 {
 
 .app-header-title {
   flex: 1;
+  white-space: nowrap;
   font-weight: 900;
   font-size: 1.05rem;
 }
@@ -218,7 +220,6 @@ select:focus-visible {
 }
 
 input[type="text"],
-input[type="password"],
 input[type="tel"],
 input[type="url"],
 textarea {
@@ -508,9 +509,19 @@ fieldset {
   text-align: center;
 }
 
-.login-panel {
+.message-panel {
   max-width: 460px;
   margin: 24px auto;
+}
+
+.app-header-email {
+  order: 3;
+  flex-basis: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.85rem;
+  color: var(--muted);
 }
 
 @media (min-width: 720px) {

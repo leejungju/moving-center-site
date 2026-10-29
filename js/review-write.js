@@ -53,6 +53,47 @@
   }
 
   /**
+   * 브라우저가 만든 JPEG 에서 APP1~APP15(ICC 색 정보 등)·COM 구간을 뺀다.
+   * 서버는 APP0(JFIF)과 영상 데이터 구간만 받는다.
+   * @param {Uint8Array} bytes
+   * @returns {Uint8Array<ArrayBuffer> | null}
+   */
+  function stripJpegSegments(bytes) {
+    if (bytes.length < 4 || bytes[0] !== 0xff || bytes[1] !== 0xd8) return null;
+    /** @type {Uint8Array[]} */
+    const keep = [bytes.subarray(0, 2)];
+    let i = 2;
+    while (i + 3 < bytes.length) {
+      if (bytes[i] !== 0xff) return null;
+      const marker = bytes[i + 1];
+      if (marker === 0xff) {
+        i += 1;
+        continue;
+      }
+      if (marker === 0xda) {
+        keep.push(bytes.subarray(i)); // SOS 부터 끝까지(영상 데이터)
+        break;
+      }
+      const length = (bytes[i + 2] << 8) | bytes[i + 3];
+      if (length < 2 || i + 2 + length > bytes.length) return null;
+      const drop = (marker >= 0xe1 && marker <= 0xef) || marker === 0xfe;
+      if (!drop) keep.push(bytes.subarray(i, i + 2 + length));
+      i += 2 + length;
+    }
+    let total = 0;
+    keep.forEach(function (part) {
+      total += part.length;
+    });
+    const out = new Uint8Array(total);
+    let offset = 0;
+    keep.forEach(function (part) {
+      out.set(part, offset);
+      offset += part.length;
+    });
+    return out;
+  }
+
+  /**
    * 사진을 다시 그려 메타데이터 없는 JPEG 로 만든다.
    * @param {File} file
    * @returns {Promise<Blob>}
@@ -80,7 +121,10 @@
           canvas.toBlob(resolve, "image/jpeg", quality);
         });
         if (!(blob instanceof Blob)) throw new Error("toBlob");
-        if (blob.size <= MAX_BYTES - 64 * 1024 || quality <= 0.4) return blob;
+        const stripped = stripJpegSegments(new Uint8Array(await blob.arrayBuffer()));
+        if (!stripped) throw new Error("jpeg");
+        const clean = new Blob([stripped], { type: "image/jpeg" });
+        if (clean.size <= MAX_BYTES - 64 * 1024 || quality <= 0.4) return clean;
         quality -= 0.15;
       }
     } finally {
@@ -218,12 +262,25 @@
     }
   });
 
+  const UNAVAILABLE = "이 주소에서는 사용할 수 없습니다. 업체에서 받은 링크로 다시 열어 주세요.";
+
   async function start() {
+    let body = null;
     try {
       const url = "/api/review/check" + (token ? "?t=" + encodeURIComponent(token) : "");
       const res = await fetch(url, { headers: { Accept: "application/json" } });
-      const body = await res.json();
-      if (!body || body.ok !== true) {
+      const type = res.headers.get("Content-Type") || "";
+      if (type.toLowerCase().startsWith("application/json")) body = await res.json();
+    } catch (e) {
+      body = null;
+    }
+    // API 가 없는 주소(GitHub Pages 등)에서는 입력 칸 없이 안내만 보여 준다.
+    if (!body || typeof body.ok !== "boolean") {
+      showStatus(UNAVAILABLE, "error");
+      return;
+    }
+    try {
+      if (body.ok !== true) {
         showStatus((body && body.message) || "지금은 후기를 작성할 수 없습니다.", "error");
         return;
       }
@@ -239,7 +296,7 @@
       form.hidden = false;
       updateCounter();
     } catch (e) {
-      showStatus("지금은 후기를 작성할 수 없습니다. 잠시 후 다시 열어 주세요.", "error");
+      showStatus(UNAVAILABLE, "error");
     }
   }
 

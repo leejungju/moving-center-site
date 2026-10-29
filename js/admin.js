@@ -105,14 +105,14 @@
     try {
       res = await fetch(path, init);
     } catch (e) {
-      throw new ApiError(0, "인터넷 연결을 확인해 주세요.");
+      throw new ApiError(0, "연결이 끊겼거나 로그인 시간이 지났습니다. 화면을 새로고침해 주세요.");
     }
     const data = await res.json().catch(function () {
       return null;
     });
-    if (res.status === 401 && path !== "/api/admin/login") {
-      showLogin("로그인 시간이 지났습니다. 다시 로그인해 주세요.");
-      throw new ApiError(401, "로그인이 필요합니다.");
+    if (res.status === 401 || res.status === 403 || res.status === 503) {
+      showDenied((data && data.error) || "관리자 확인이 필요합니다.");
+      throw new ApiError(res.status, "관리자 확인이 필요합니다.");
     }
     if (!res.ok || !data || data.ok !== true) {
       throw new ApiError(res.status, (data && data.error) || "잠시 문제가 생겼습니다. 다시 해 주세요.");
@@ -128,62 +128,50 @@
     try {
       await fn();
     } catch (e) {
-      if (e instanceof ApiError && e.status === 401) return;
+      if (e instanceof ApiError && (e.status === 401 || e.status === 403 || e.status === 503)) return;
       notify(e instanceof Error ? e.message : "잠시 문제가 생겼습니다.");
     }
   }
 
-  // ---------- 로그인 ----------
-  const loginView = byId("login-view");
+  // ---------- 화면 전환 ----------
+  // 로그인은 Cloudflare Access(이메일 일회용 PIN)가 맡는다. 이 화면에는 로그인 입력 칸이 없다.
   const appView = byId("app-view");
-  const loginError = byId("login-error");
-  const logoutButton = byId("logout-button");
+  const deniedView = byId("denied-view");
+  const unavailableView = byId("unavailable-view");
+  const logoutLink = byId("logout-link");
+  const adminEmail = byId("admin-email");
 
-  /** @param {string} [message] */
-  function showLogin(message) {
+  /** @param {HTMLElement | null} view */
+  function showOnly(view) {
     byId("loading").hidden = true;
-    appView.hidden = true;
-    logoutButton.hidden = true;
-    loginView.hidden = false;
-    loginError.textContent = message || "";
-    loginError.hidden = !message;
+    [appView, deniedView, unavailableView].forEach(function (v) {
+      v.hidden = v !== view;
+    });
   }
 
-  function showApp() {
-    byId("loading").hidden = true;
-    loginView.hidden = true;
-    appView.hidden = false;
-    logoutButton.hidden = false;
+  /** API 가 없는 주소(GitHub Pages 등): 안내만 보여 준다. */
+  function showUnavailable() {
+    showOnly(unavailableView);
+    logoutLink.hidden = true;
+    adminEmail.hidden = true;
+  }
+
+  /** @param {string} message */
+  function showDenied(message) {
+    showOnly(deniedView);
+    byId("denied-message").textContent = message;
+    logoutLink.hidden = true;
+    adminEmail.hidden = true;
+  }
+
+  /** @param {string} email */
+  function showApp(email) {
+    showOnly(appView);
+    adminEmail.textContent = email;
+    adminEmail.hidden = email === "";
+    logoutLink.hidden = false;
     openView("reviews");
   }
-
-  byId("login-form").addEventListener("submit", async function (event) {
-    event.preventDefault();
-    const id = /** @type {HTMLInputElement} */ (byId("login-id"));
-    const password = /** @type {HTMLInputElement} */ (byId("login-password"));
-    const submit = /** @type {HTMLButtonElement} */ (byId("login-button"));
-    if (id.value.trim() === "" || password.value === "") {
-      showLogin("아이디와 비밀번호를 모두 적어 주세요.");
-      return;
-    }
-    submit.disabled = true;
-    submit.textContent = "확인하는 중…";
-    try {
-      await api("POST", "/api/admin/login", { id: id.value.trim(), password: password.value });
-      password.value = "";
-      showApp();
-    } catch (e) {
-      showLogin(e instanceof Error ? e.message : "로그인하지 못했습니다.");
-    } finally {
-      submit.disabled = false;
-      submit.textContent = "로그인";
-    }
-  });
-
-  logoutButton.addEventListener("click", async function () {
-    await api("POST", "/api/admin/logout").catch(function () {});
-    showLogin("로그아웃했습니다.");
-  });
 
   // ---------- 메뉴 ----------
   const views = ["reviews", "links", "texts", "contact", "audit"];
@@ -521,12 +509,27 @@
   });
 
   // ---------- 시작 ----------
-  fetch("/api/admin/me", { credentials: "same-origin", headers: { Accept: "application/json" } })
-    .then(function (res) {
-      if (res.ok) showApp();
-      else showLogin();
-    })
-    .catch(function () {
-      showLogin("서버에 연결하지 못했습니다.");
-    });
+  // API 가 JSON 으로 답하지 않으면(GitHub Pages 의 404 화면 등) 이 주소에서는 쓸 수 없다고만 알린다.
+  async function start() {
+    let res;
+    let data = null;
+    try {
+      res = await fetch("/api/admin/me", { credentials: "same-origin", headers: { Accept: "application/json" } });
+      const type = res.headers.get("Content-Type") || "";
+      if (type.toLowerCase().startsWith("application/json")) data = await res.json();
+    } catch (e) {
+      data = null;
+    }
+    if (!res || !data || typeof data.ok !== "boolean") {
+      showUnavailable();
+      return;
+    }
+    if (res.ok && data.ok === true) {
+      showApp(typeof data.email === "string" ? data.email : "");
+      return;
+    }
+    showDenied(typeof data.error === "string" ? data.error : "관리자 확인이 필요합니다.");
+  }
+
+  start();
 })();

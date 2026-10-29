@@ -1,103 +1,152 @@
-// 관리자 로그인, 세션, 로그인 실패 제한, 관리자 기록
+// 관리자 확인: Cloudflare Access 가 요청에 붙여 주는 Cf-Access-Jwt-Assertion(JWT)을 서버에서 다시 검증한다.
+// Access 를 거치지 않은 요청, Access 가 꺼졌거나 잘못 설정된 경우에도 여기서 막힌다(fail-closed).
+// 앱 자체의 아이디·로그인 기능은 없다. 로그인은 Access(이메일 일회용 PIN)가 맡는다.
 
-import { randomToken, safeStringEqual, sha256Hex, verifyPassword } from "./crypto";
-import { fail, getCookie, json, readJson } from "./http";
+import { fromBase64url } from "./crypto";
 import type { Ctx, Env } from "./types";
 
-export const SESSION_COOKIE = "__Host-sid";
-export const SESSION_TTL_MS = 12 * 60 * 60 * 1000;
-export const LOGIN_WINDOW_MS = 15 * 60 * 1000;
-export const LOGIN_MAX_FAILURES = 5;
-export const LOGIN_LOCK_MS = 15 * 60 * 1000;
+export const ACCESS_JWT_HEADER = "Cf-Access-Jwt-Assertion";
+/** 서버 시계 차이 허용 범위(초) */
+export const CLOCK_SKEW_SEC = 60;
+/** Access 공개키를 다시 받아 오는 주기 */
+export const JWKS_TTL_MS = 60 * 60 * 1000;
+/** 모르는 kid 가 와도 이 시간 안에는 공개키를 다시 받지 않는다(외부 요청 남발 방지) */
+export const JWKS_REFETCH_MIN_MS = 60 * 1000;
+const MAX_JWT_LENGTH = 8 * 1024;
 
-const LOGIN_FAILED = "아이디 또는 비밀번호가 맞지 않습니다.";
-const LOGIN_LOCKED = "로그인을 여러 번 실패해서 15분 동안 잠겼습니다. 15분 뒤에 다시 해 주세요.";
+// 팀 도메인은 이 형식만 받는다. 다른 주소의 공개키를 믿게 만들 수 없다.
+const TEAM_DOMAIN_PATTERN = /^[a-z0-9-]+\.cloudflareaccess\.com$/;
+// Access 애플리케이션의 AUD 태그(64자리 16진수)
+const AUD_PATTERN = /^[0-9a-f]{64}$/;
+// 관리자 이메일 1개. 쉼표 등으로 여러 개를 넣을 수 없다.
+const EMAIL_PATTERN = /^[^\s@,;<>"']+@[^\s@,;<>"']+\.[^\s@,;<>"']+$/;
 
-export async function audit(env: Env, now: number, action: string, target = ""): Promise<void> {
-  await env.DB.prepare("INSERT INTO audit_log (created_at, action, target) VALUES (?1, ?2, ?3)").bind(now, action, target).run();
+export interface AccessConfig {
+  teamDomain: string;
+  aud: string;
+  adminEmail: string;
 }
 
-export function ipHash(prefix: string, ip: string): Promise<string> {
-  return sha256Hex(`${prefix}:${ip}`);
+/** 환경 변수 3개가 모두 있고 형식이 맞을 때만 설정을 돌려준다. */
+export function accessConfig(env: Env): AccessConfig | null {
+  const teamDomain = (env.CF_ACCESS_TEAM_DOMAIN ?? "").trim();
+  const aud = (env.CF_ACCESS_AUD ?? "").trim();
+  const adminEmail = (env.ADMIN_EMAIL ?? "").trim().toLowerCase();
+  if (!TEAM_DOMAIN_PATTERN.test(teamDomain)) return null;
+  if (!AUD_PATTERN.test(aud)) return null;
+  if (!EMAIL_PATTERN.test(adminEmail)) return null;
+  return { teamDomain, aud, adminEmail };
 }
 
-function sessionCookie(value: string, maxAge: number): string {
-  return `${SESSION_COOKIE}=${value}; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=${maxAge}`;
+// ---------- Access 공개키(JWKS) ----------
+
+interface KeyCache {
+  teamDomain: string;
+  fetchedAt: number;
+  keys: Map<string, CryptoKey>;
 }
 
-export async function login(ctx: Ctx): Promise<Response> {
-  const { env, now } = ctx;
-  const ipKey = await ipHash("login", ctx.ip);
+// 같은 워커 인스턴스 안에서만 유지되는 메모리 캐시
+let keyCache: KeyCache | null = null;
 
-  const lock = await env.DB.prepare("SELECT locked_until FROM login_locks WHERE ip_hash = ?1")
-    .bind(ipKey)
-    .first<{ locked_until: number }>();
-  if (lock && lock.locked_until > now) {
-    return fail(429, LOGIN_LOCKED, { lockedUntil: lock.locked_until });
-  }
+const RSA_PARAMS = { name: "RSASSA-PKCS1-v1_5", hash: "SHA-256" } as const;
 
-  const body = await readJson(ctx.request);
-  const id = typeof body?.id === "string" ? body.id.slice(0, 200) : "";
-  const password = typeof body?.password === "string" ? body.password.slice(0, 500) : "";
-
-  const configured = !!env.ADMIN_ID && !!env.ADMIN_PASSWORD_HASH;
-  // 아이디가 틀려도 비밀번호 계산을 똑같이 해서 어느 쪽이 틀렸는지 시간으로도 드러나지 않게 한다.
-  const [idOk, passwordOk] = await Promise.all([
-    safeStringEqual(id, env.ADMIN_ID ?? ""),
-    verifyPassword(password, env.ADMIN_PASSWORD_HASH ?? ""),
-  ]);
-
-  if (!configured || !idOk || !passwordOk || id === "") {
-    await env.DB.prepare("INSERT INTO login_failures (ip_hash, attempted_at) VALUES (?1, ?2)").bind(ipKey, now).run();
-    const row = await env.DB.prepare("SELECT COUNT(*) AS n FROM login_failures WHERE ip_hash = ?1 AND attempted_at > ?2")
-      .bind(ipKey, now - LOGIN_WINDOW_MS)
-      .first<{ n: number }>();
-    if ((row?.n ?? 0) >= LOGIN_MAX_FAILURES) {
-      await env.DB.prepare(
-        "INSERT INTO login_locks (ip_hash, locked_until) VALUES (?1, ?2) ON CONFLICT (ip_hash) DO UPDATE SET locked_until = excluded.locked_until",
-      )
-        .bind(ipKey, now + LOGIN_LOCK_MS)
-        .run();
-      await env.DB.prepare("DELETE FROM login_failures WHERE ip_hash = ?1").bind(ipKey).run();
-      await audit(env, now, "로그인 실패 (15분 잠금)");
-    } else {
-      await audit(env, now, "로그인 실패");
+async function fetchKeys(teamDomain: string): Promise<Map<string, CryptoKey> | null> {
+  try {
+    const res = await fetch(`https://${teamDomain}/cdn-cgi/access/certs`, {
+      headers: { Accept: "application/json" },
+      redirect: "manual",
+    });
+    if (res.status !== 200) return null;
+    const data = (await res.json()) as { keys?: unknown };
+    if (!Array.isArray(data.keys)) return null;
+    const keys = new Map<string, CryptoKey>();
+    for (const jwk of data.keys as Record<string, unknown>[]) {
+      if (!jwk || jwk.kty !== "RSA" || typeof jwk.kid !== "string" || typeof jwk.n !== "string" || typeof jwk.e !== "string") continue;
+      if (jwk.alg !== undefined && jwk.alg !== "RS256") continue;
+      try {
+        const key = await crypto.subtle.importKey("jwk", { kty: "RSA", n: jwk.n, e: jwk.e, alg: "RS256", ext: true }, RSA_PARAMS, false, ["verify"]);
+        keys.set(jwk.kid, key);
+      } catch {
+        // 읽을 수 없는 키는 건너뛴다.
+      }
     }
-    return fail(401, LOGIN_FAILED);
+    return keys;
+  } catch {
+    return null;
   }
-
-  const token = randomToken(32); // 256비트
-  const tokenHash = await sha256Hex(token);
-  await env.DB.batch([
-    env.DB.prepare("DELETE FROM admin_sessions WHERE expires_at <= ?1").bind(now),
-    env.DB.prepare("DELETE FROM login_failures WHERE ip_hash = ?1 OR attempted_at <= ?2").bind(ipKey, now - LOGIN_WINDOW_MS),
-    env.DB.prepare("DELETE FROM login_locks WHERE locked_until <= ?1").bind(now),
-    env.DB.prepare("INSERT INTO admin_sessions (session_hash, created_at, expires_at) VALUES (?1, ?2, ?3)").bind(
-      tokenHash,
-      now,
-      now + SESSION_TTL_MS,
-    ),
-  ]);
-  await audit(env, now, "로그인");
-  return json({ ok: true }, 200, { "Set-Cookie": sessionCookie(token, SESSION_TTL_MS / 1000) });
 }
 
-/** 유효한 관리자 세션이면 세션 해시를, 아니면 null 을 돌려준다. */
-export async function currentSession(ctx: Ctx): Promise<string | null> {
-  const token = getCookie(ctx.request, SESSION_COOKIE);
-  if (!token || !/^[A-Za-z0-9_-]{43}$/.test(token)) return null;
-  const tokenHash = await sha256Hex(token);
-  const row = await ctx.env.DB.prepare("SELECT session_hash FROM admin_sessions WHERE session_hash = ?1 AND expires_at > ?2")
-    .bind(tokenHash, ctx.now)
-    .first<{ session_hash: string }>();
-  return row ? row.session_hash : null;
+async function signingKey(teamDomain: string, kid: string, now: number): Promise<CryptoKey | null> {
+  const cached = keyCache && keyCache.teamDomain === teamDomain ? keyCache : null;
+  if (cached && now - cached.fetchedAt < JWKS_TTL_MS) {
+    const key = cached.keys.get(kid);
+    if (key) return key;
+    // 키가 바뀌었을 수 있으니 다시 받되, 너무 자주 받지는 않는다.
+    if (now - cached.fetchedAt < JWKS_REFETCH_MIN_MS) return null;
+  }
+  const keys = await fetchKeys(teamDomain);
+  if (!keys) return null;
+  keyCache = { teamDomain, fetchedAt: now, keys };
+  return keys.get(kid) ?? null;
 }
 
-export async function logout(ctx: Ctx): Promise<Response> {
-  const sessionHash = await currentSession(ctx);
-  if (sessionHash) {
-    await ctx.env.DB.prepare("DELETE FROM admin_sessions WHERE session_hash = ?1").bind(sessionHash).run();
-    await audit(ctx.env, ctx.now, "로그아웃");
+// ---------- JWT 검증 ----------
+
+function decodeJson(part: string): Record<string, unknown> | null {
+  const bytes = fromBase64url(part);
+  if (!bytes) return null;
+  try {
+    const value: unknown = JSON.parse(new TextDecoder().decode(bytes));
+    return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : null;
+  } catch {
+    return null;
   }
-  return json({ ok: true }, 200, { "Set-Cookie": sessionCookie("", 0) });
+}
+
+/** 서명·aud·iss·exp·nbf 가 모두 맞으면 클레임을, 아니면 null 을 돌려준다. */
+export async function verifyAccessJwt(token: string, config: AccessConfig, now: number): Promise<Record<string, unknown> | null> {
+  if (token.length > MAX_JWT_LENGTH) return null;
+  const parts = token.split(".");
+  if (parts.length !== 3) return null;
+  const [headerPart, payloadPart, signaturePart] = parts as [string, string, string];
+
+  const header = decodeJson(headerPart);
+  if (!header || header.alg !== "RS256" || typeof header.kid !== "string") return null;
+  const signature = fromBase64url(signaturePart);
+  if (!signature || signature.length === 0) return null;
+
+  const key = await signingKey(config.teamDomain, header.kid, now);
+  if (!key) return null;
+  const signed = new TextEncoder().encode(`${headerPart}.${payloadPart}`);
+  if (!(await crypto.subtle.verify(RSA_PARAMS, key, signature, signed))) return null;
+
+  const claims = decodeJson(payloadPart);
+  if (!claims) return null;
+  if (claims.iss !== `https://${config.teamDomain}`) return null;
+  const aud = claims.aud;
+  const audOk = typeof aud === "string" ? aud === config.aud : Array.isArray(aud) && aud.includes(config.aud);
+  if (!audOk) return null;
+  const nowSec = now / 1000;
+  if (typeof claims.exp !== "number" || nowSec >= claims.exp + CLOCK_SKEW_SEC) return null;
+  if (typeof claims.nbf !== "number" || nowSec + CLOCK_SKEW_SEC < claims.nbf) return null;
+  return claims;
+}
+
+export type AdminCheck = { ok: true; email: string } | { ok: false; status: 401 | 403 | 503; message: string };
+
+/** 관리자 API 요청마다 부른다. */
+export async function checkAdmin(ctx: Ctx): Promise<AdminCheck> {
+  const config = accessConfig(ctx.env);
+  if (!config) {
+    return { ok: false, status: 503, message: "관리자 화면 설정이 끝나지 않았습니다. 설정을 맡은 분께 연락해 주세요." };
+  }
+  const token = ctx.request.headers.get(ACCESS_JWT_HEADER);
+  if (!token) return { ok: false, status: 401, message: "로그인이 필요합니다." };
+  const claims = await verifyAccessJwt(token, config, ctx.now);
+  if (!claims) return { ok: false, status: 401, message: "로그인이 필요합니다." };
+  if (typeof claims.email !== "string" || claims.email.toLowerCase() !== config.adminEmail) {
+    return { ok: false, status: 403, message: "이 계정은 관리자로 등록되어 있지 않습니다." };
+  }
+  return { ok: true, email: claims.email.toLowerCase() };
 }

@@ -1,8 +1,7 @@
 // 공개 후기: 목록, 사진, 작성 링크 확인, 후기 제출
 
-import { ipHash } from "./auth";
 import { randomId, sha256Hex } from "./crypto";
-import { fail, json } from "./http";
+import { fail, json, readBodyLimited } from "./http";
 import { checkJpeg, MAX_PHOTO_BYTES } from "./jpeg";
 import { loadSettings, openReviewActive } from "./settings";
 import type { Ctx } from "./types";
@@ -12,7 +11,8 @@ export const TOKEN_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 export const MAX_PHOTOS = 3;
 export const OPEN_REVIEW_DAILY_LIMIT = 3;
 const DAY_MS = 24 * 60 * 60 * 1000;
-const MAX_BODY_BYTES = MAX_PHOTOS * MAX_PHOTO_BYTES + 512 * 1024;
+/** 후기 제출 본문 상한: 사진 3장 x 5MB + 글·양식 여유 1MB */
+export const MAX_BODY_BYTES = MAX_PHOTOS * MAX_PHOTO_BYTES + 1024 * 1024;
 const PUBLIC_PAGE_SIZE = 20;
 
 export interface ReviewRow {
@@ -120,7 +120,8 @@ export async function getPublicPhoto(ctx: Ctx): Promise<Response> {
   if (!row) return fail(404, "사진을 찾을 수 없습니다.");
   const object = await ctx.env.PHOTOS.get(row.r2_key);
   if (!object) return fail(404, "사진을 찾을 수 없습니다.");
-  return photoResponse(object, "public, max-age=60");
+  // 관리자가 숨기거나 지우면 바로 반영되도록 매번 확인하게 한다.
+  return photoResponse(object, "no-cache");
 }
 
 type TokenState = "valid" | "used" | "expired" | "invalid";
@@ -157,15 +158,20 @@ export async function checkWriteAccess(ctx: Ctx): Promise<Response> {
   return json({ ok: false, reason: "closed", message: "후기는 업체에서 보내 드린 링크로만 작성할 수 있습니다." });
 }
 
-async function verifyTurnstile(secret: string, response: string, ip: string): Promise<boolean> {
+function ipHash(prefix: string, ip: string): Promise<string> {
+  return sha256Hex(`${prefix}:${ip}`);
+}
+
+/** Turnstile 서버 확인. 성공이고, 토큰이 이 사이트(요청 호스트)에서 발급된 것이어야 한다. */
+async function verifyTurnstile(secret: string, response: string, ip: string, hostname: string): Promise<boolean> {
   const form = new FormData();
   form.append("secret", secret);
   form.append("response", response);
   form.append("remoteip", ip);
   try {
     const res = await fetch("https://challenges.cloudflare.com/turnstile/v0/siteverify", { method: "POST", body: form });
-    const data = (await res.json()) as { success?: unknown };
-    return data.success === true;
+    const data = (await res.json()) as { success?: unknown; hostname?: unknown };
+    return data.success === true && data.hostname === hostname;
   } catch {
     return false;
   }
@@ -174,15 +180,16 @@ async function verifyTurnstile(secret: string, response: string, ip: string): Pr
 /** 후기 제출. 항상 승인 대기로 저장한다. */
 export async function submitReview(ctx: Ctx): Promise<Response> {
   const { env, now } = ctx;
-  const length = Number(ctx.request.headers.get("Content-Length") ?? "0");
-  if (length > MAX_BODY_BYTES) return fail(413, "사진 용량이 너무 큽니다.");
-  if (!(ctx.request.headers.get("Content-Type") ?? "").toLowerCase().startsWith("multipart/form-data")) {
+  const contentType = ctx.request.headers.get("Content-Type") ?? "";
+  if (!contentType.toLowerCase().startsWith("multipart/form-data")) {
     return fail(400, "잘못된 요청입니다.");
   }
+  const body = await readBodyLimited(ctx.request, MAX_BODY_BYTES);
+  if (body === "too_large") return fail(413, "사진 용량이 너무 큽니다.");
 
   let form: FormData;
   try {
-    form = await ctx.request.formData();
+    form = await new Response(body, { headers: { "Content-Type": contentType } }).formData();
   } catch {
     return fail(400, "잘못된 요청입니다.");
   }
@@ -206,7 +213,7 @@ export async function submitReview(ctx: Ctx): Promise<Response> {
     const check = checkJpeg(bytes);
     if (check === "too_large") return fail(400, "사진 한 장은 5MB 이하여야 합니다.");
     if (check === "not_jpeg") return fail(400, "JPEG 사진만 올릴 수 있습니다.");
-    if (check === "has_exif") return fail(400, "위치 정보 등 사진 정보가 남아 있는 사진은 올릴 수 없습니다.");
+    if (check === "has_metadata") return fail(400, "위치 정보 등 사진 정보가 남아 있는 사진은 올릴 수 없습니다.");
     photos.push(bytes);
   }
 
@@ -236,7 +243,7 @@ export async function submitReview(ctx: Ctx): Promise<Response> {
       .first<{ n: number }>();
     if ((count?.n ?? 0) >= OPEN_REVIEW_DAILY_LIMIT) return fail(429, "하루에 작성할 수 있는 후기 수를 넘었습니다. 내일 다시 해 주세요.");
     const captcha = form.get("cf-turnstile-response");
-    if (typeof captcha !== "string" || captcha === "" || !(await verifyTurnstile(env.TURNSTILE_SECRET_KEY!, captcha, ctx.ip))) {
+    if (typeof captcha !== "string" || captcha === "" || !(await verifyTurnstile(env.TURNSTILE_SECRET_KEY!, captcha, ctx.ip, ctx.url.hostname))) {
       return fail(400, "자동 입력 방지 확인에 실패했습니다. 다시 해 주세요.");
     }
     await env.DB.prepare("INSERT INTO open_review_log (ip_hash, created_at) VALUES (?1, ?2)").bind(ipKey, now).run();

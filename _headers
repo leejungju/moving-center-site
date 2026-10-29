@@ -1,5 +1,6 @@
 # Cloudflare Pages 정적 파일 응답 헤더 (API 응답 헤더는 src/http.ts 에서 붙인다)
 /*
+  Strict-Transport-Security: max-age=31536000
   X-Content-Type-Options: nosniff
   Referrer-Policy: strict-origin-when-cross-origin
   X-Frame-Options: DENY

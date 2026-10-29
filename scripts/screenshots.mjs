@@ -1,26 +1,23 @@
 // 로컬 서버를 띄우고 가짜 시험 데이터("테스트 고객")를 넣은 뒤 화면을 docs/screens/ 에 캡처한다.
 //   npm run screenshots
+// 관리자 화면은 가짜 Access(시험용 키로 서명한 JWT, 이메일 admin@example.com)로 연다.
 import { mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { chromium } from "playwright";
-import { apiClient, startLocalServer } from "./local-server.mjs";
-import { hashPassword } from "./hash-password.mjs";
+import { apiClient, attachAccessHeader, startLocalServer } from "./local-server.mjs";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const out = join(root, "docs/screens");
 mkdirSync(out, { recursive: true });
 
-const PASSWORD = "test-password-screens";
-const server = await startLocalServer({
-  port: 8791,
-  bindings: { ADMIN_ID: "test-admin", ADMIN_PASSWORD_HASH: await hashPassword(PASSWORD), TURNSTILE_SECRET_KEY: "" },
-});
+const server = await startLocalServer();
 const browser = await chromium.launch();
+const token = () => server.access.sign();
 
 try {
-  const admin = apiClient(server.url);
-  if ((await admin.call("POST", "/api/admin/login", { id: "test-admin", password: PASSWORD })).status !== 200) throw new Error("login");
+  const admin = apiClient(server.url, token);
+  if ((await admin.call("GET", "/api/admin/me")).status !== 200) throw new Error("access");
   await admin.call("PUT", "/api/admin/settings/contact", { kakaoChannelId: "_test", smsNumber: "010-0000-0000" });
 
   // 시험용 그림(PNG)을 브라우저에서 만든다. 실제 사진이 아니다.
@@ -110,13 +107,17 @@ try {
   }
 
   // 관리자 화면 (휴대폰 360px, 후기 관리는 1440px 도)
+  // API 가 없는 주소(GitHub Pages 등)에서 열었을 때의 안내
+  const unavailable = await browser.newPage({ viewport: { width: 360, height: 780 }, deviceScaleFactor: 2 });
+  await unavailable.route("**/api/**", (route) => route.fulfill({ status: 404, contentType: "text/html", body: "<h1>404</h1>" }));
+  await unavailable.goto(server.url + "/admin/", { waitUntil: "load" });
+  await unavailable.waitForSelector("#unavailable-view:not([hidden])");
+  await unavailable.screenshot({ path: join(out, "admin-unavailable-360.png"), fullPage: true });
+  await unavailable.close();
+
   const mobile = await browser.newPage({ viewport: { width: 360, height: 780 }, deviceScaleFactor: 2 });
+  await attachAccessHeader(mobile, server.url, token);
   await mobile.goto(server.url + "/admin/", { waitUntil: "load" });
-  await mobile.waitForSelector("#login-view:not([hidden])");
-  await mobile.fill("#login-id", "test-admin");
-  await mobile.screenshot({ path: join(out, "admin-login-360.png"), fullPage: true });
-  await mobile.fill("#login-password", PASSWORD);
-  await mobile.click("#login-button");
   await mobile.waitForSelector("#view-reviews:not([hidden]) .review-item");
   await mobile.screenshot({ path: join(out, "admin-reviews-pending-360.png"), fullPage: true });
   await mobile.click("[data-view=contact]");
@@ -131,7 +132,7 @@ try {
   await mobile.screenshot({ path: join(out, "admin-audit-360.png"), fullPage: true });
 
   const desktop = await browser.newPage({ viewport: { width: 1440, height: 900 } });
-  await desktop.context().addCookies(await mobile.context().cookies());
+  await attachAccessHeader(desktop, server.url, token);
   await desktop.goto(server.url + "/admin/", { waitUntil: "load" });
   await desktop.waitForSelector("#view-reviews:not([hidden]) .review-item");
   await desktop.screenshot({ path: join(out, "admin-reviews-pending-1440.png"), fullPage: true });

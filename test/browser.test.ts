@@ -1,23 +1,20 @@
-// 실제 로컬 서버(wrangler pages dev)와 헤드리스 브라우저로 확인하는 시험
+// 로컬 서버(miniflare: 실제 Pages Functions 묶음 + 정적 파일 + 가짜 Access)와 헤드리스 브라우저로 확인하는 시험
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { chromium, type Browser } from "playwright";
-import { hashPassword } from "../src/crypto";
+import { chromium, type Browser, type Page } from "playwright";
 import { checkJpeg } from "../src/jpeg";
 // @ts-expect-error 타입 선언 없는 .mjs 도우미
-import { apiClient, startLocalServer } from "../scripts/local-server.mjs";
+import { apiClient, attachAccessHeader, startLocalServer } from "../scripts/local-server.mjs";
 
 interface LocalServer {
   url: string;
+  access: { sign(claims?: Record<string, unknown>): Promise<string> };
   stop(): Promise<void>;
-  log(): string;
 }
 interface Client {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any -- 시험에서 JSON 응답을 그대로 다룬다
   call(method: string, path: string, body?: unknown): Promise<{ status: number; data: any }>;
-  cookie(): string;
 }
 
-const PASSWORD = "test-password-e2e-1234";
 let server: LocalServer;
 let browser: Browser;
 let admin: Client;
@@ -43,14 +40,20 @@ async function newReviewLink(): Promise<string> {
   return res.data.url as string;
 }
 
+const adminToken = () => server.access.sign();
+
+/** Access 를 거친 것처럼 JWT 헤더를 붙인 관리자 화면 */
+async function adminPage(): Promise<Page> {
+  const page = await browser.newPage();
+  await attachAccessHeader(page, server.url, adminToken);
+  return page;
+}
+
 beforeAll(async () => {
-  server = await startLocalServer({
-    port: 8790,
-    bindings: { ADMIN_ID: "test-admin", ADMIN_PASSWORD_HASH: await hashPassword(PASSWORD), TURNSTILE_SECRET_KEY: "" },
-  });
+  server = await startLocalServer();
   browser = await chromium.launch();
-  admin = apiClient(server.url);
-  const res = await admin.call("POST", "/api/admin/login", { id: "test-admin", password: PASSWORD });
+  admin = apiClient(server.url, adminToken);
+  const res = await admin.call("GET", "/api/admin/me");
   expect(res.status).toBe(200);
 }, 180_000);
 
@@ -94,10 +97,8 @@ describe("브라우저 시험", () => {
     expect(dialogs).toEqual([]);
 
     // 관리자 화면에서도 글자로만 보인다
+    await attachAccessHeader(page, server.url, adminToken);
     await page.goto(server.url + "/admin/");
-    await page.fill("#login-id", "test-admin");
-    await page.fill("#login-password", PASSWORD);
-    await page.click("#login-button");
     await page.waitForSelector("#app-view:not([hidden])");
     await page.getByRole("tab", { name: /공개 중/ }).click();
     await page.waitForSelector(".review-item");
@@ -127,7 +128,7 @@ describe("브라우저 시험", () => {
     })()`)) as number[];
     const exif = [0xff, 0xe1, 0x00, 0x16, 0x45, 0x78, 0x69, 0x66, 0x00, 0x00, 0x4d, 0x4d, 0x00, 0x2a, 0x00, 0x00, 0x00, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00];
     const withExif = Buffer.from([...jpeg.slice(0, 2), ...exif, ...jpeg.slice(2)]);
-    expect(checkJpeg(new Uint8Array(withExif))).toBe("has_exif");
+    expect(checkJpeg(new Uint8Array(withExif))).toBe("has_metadata");
 
     await page.goto(link);
     await page.waitForSelector("#review-form:not([hidden])");
@@ -146,7 +147,7 @@ describe("브라우저 시험", () => {
     const review = pending.data.reviews.find((r: { content: string }) => r.content.startsWith("브라우저 사진 시험용"));
     expect(review.status).toBe("pending");
     expect(review.photos).toHaveLength(1);
-    const photo = await fetch(server.url + review.photos[0].url, { headers: { Cookie: admin.cookie() } });
+    const photo = await fetch(server.url + review.photos[0].url, { headers: { "Cf-Access-Jwt-Assertion": await adminToken() } });
     const bytes = new Uint8Array(await photo.arrayBuffer());
     expect(checkJpeg(bytes)).toBe("ok");
     expect(jpegSize(bytes)).toEqual({ width: 1600, height: 1200 });
@@ -193,7 +194,53 @@ describe("브라우저 시험", () => {
     await cleared.close();
   });
 
-  it("정적 페이지 보안 헤더: CSP, nosniff, Referrer-Policy, noindex", async () => {
+  it("관리자 화면: 로그인 입력 칸이 없고, 이메일과 Access 로그아웃 링크를 보여 준다", async () => {
+    const page = await adminPage();
+    await page.goto(server.url + "/admin/");
+    await page.waitForSelector("#app-view:not([hidden])");
+    expect(await page.textContent("#admin-email")).toBe("admin@example.com");
+    expect(await page.getAttribute("#logout-link", "href")).toBe("/cdn-cgi/access/logout");
+    expect(await page.isVisible("#logout-link")).toBe(true);
+    expect(await page.locator("input[type=password]").count()).toBe(0);
+    await page.close();
+  });
+
+  it("관리자 화면: JWT 가 없거나 다른 이메일이면 입력 칸 없이 안내만 보여 준다", async () => {
+    const noJwt = await browser.newPage();
+    await noJwt.goto(server.url + "/admin/");
+    await noJwt.waitForSelector("#denied-view:not([hidden])");
+    expect(await noJwt.textContent("#denied-message")).toContain("로그인이 필요합니다");
+    expect(await noJwt.isHidden("#app-view")).toBe(true);
+    expect(await noJwt.locator("input:visible, textarea:visible").count()).toBe(0);
+    await noJwt.close();
+
+    const other = await browser.newPage();
+    await attachAccessHeader(other, server.url, () => server.access.sign({ email: "someone@example.com" }));
+    await other.goto(server.url + "/admin/");
+    await other.waitForSelector("#denied-view:not([hidden])");
+    expect(await other.textContent("#denied-message")).toContain("관리자로 등록되어 있지 않습니다");
+    await other.close();
+  });
+
+  it("API 가 없는 주소(GitHub Pages 등)에서는 관리자·후기 작성 화면에 입력 칸 없이 안내만 보여 준다", async () => {
+    for (const path of ["/admin/", "/review/write?t=" + "A".repeat(43)]) {
+      const page = await adminPage();
+      await page.route("**/api/**", (route) => route.fulfill({ status: 404, contentType: "text/html", body: "<h1>404</h1>" }));
+      await page.goto(server.url + path);
+      await page.waitForFunction('document.body.textContent.includes("이 주소에서는 사용할 수 없습니다")');
+      expect(await page.locator("input:visible, textarea:visible, button[type=submit]:visible").count(), path).toBe(0);
+      expect(await page.locator("input[type=password]").count(), path).toBe(0);
+      await page.close();
+    }
+    // 연결 자체가 안 될 때도 같다
+    const page = await browser.newPage();
+    await page.route("**/api/**", (route) => route.abort());
+    await page.goto(server.url + "/admin/");
+    await page.waitForSelector("#unavailable-view:not([hidden])");
+    await page.close();
+  });
+
+  it("정적 페이지 보안 헤더: CSP, nosniff, Referrer-Policy, noindex, HSTS", async () => {
     const home = await fetch(server.url + "/");
     const csp = home.headers.get("Content-Security-Policy")!;
     expect(csp).toContain("script-src 'self';");
@@ -203,6 +250,7 @@ describe("브라우저 시험", () => {
     expect(home.headers.get("X-Content-Type-Options")).toBe("nosniff");
     expect(home.headers.get("Referrer-Policy")).toBe("strict-origin-when-cross-origin");
     expect(home.headers.get("X-Robots-Tag")).toBeNull();
+    expect(home.headers.get("Strict-Transport-Security")).toBe("max-age=31536000");
 
     const write = await fetch(server.url + "/review/write?t=x");
     expect(write.headers.get("Content-Security-Policy")).toContain("script-src 'self' https://challenges.cloudflare.com;");
@@ -210,8 +258,9 @@ describe("브라우저 시험", () => {
     expect(write.headers.get("X-Robots-Tag")).toBe("noindex, nofollow");
     expect(write.headers.get("Referrer-Policy")).toBe("no-referrer");
 
-    const adminPage = await fetch(server.url + "/admin/");
-    expect(adminPage.headers.get("X-Robots-Tag")).toBe("noindex, nofollow");
-    expect(adminPage.headers.get("Content-Security-Policy")).not.toContain("challenges.cloudflare.com");
+    const adminRes = await fetch(server.url + "/admin/");
+    expect(adminRes.headers.get("X-Robots-Tag")).toBe("noindex, nofollow");
+    expect(adminRes.headers.get("Strict-Transport-Security")).toBe("max-age=31536000");
+    expect(adminRes.headers.get("Content-Security-Policy")).not.toContain("challenges.cloudflare.com");
   });
 });

@@ -1,7 +1,7 @@
 // 관리자 API: 후기 관리, 후기 요청 링크, 홈페이지 문구, 연락처, 최근 기록
 // 관리자는 고객 후기 내용을 고치거나 직접 쓸 수 없다. 답변만 쓸 수 있다.
 
-import { audit } from "./auth";
+import { audit } from "./audit";
 import { randomToken, sha256Hex } from "./crypto";
 import { fail, json, readJson } from "./http";
 import { cleanContent, photoResponse, photosFor, TOKEN_TTL_MS, type ReviewRow } from "./reviews";
@@ -27,8 +27,8 @@ async function findReview(ctx: Ctx): Promise<ReviewRow | null> {
     .first<ReviewRow>();
 }
 
-export async function me(): Promise<Response> {
-  return json({ ok: true });
+export async function me(ctx: Ctx): Promise<Response> {
+  return json({ ok: true, email: ctx.adminEmail ?? "" });
 }
 
 export async function listReviews(ctx: Ctx): Promise<Response> {

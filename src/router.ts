@@ -1,7 +1,7 @@
 // /api/* 요청을 처리한다. functions/api/[[path]].ts 가 이 함수를 부른다.
 
 import * as admin from "./admin";
-import { currentSession, login, logout } from "./auth";
+import { checkAdmin } from "./auth";
 import { fail, json, originAllowed, withSecurityHeaders } from "./http";
 import { checkWriteAccess, getPublicPhoto, listPublicReviews, submitReview } from "./reviews";
 import { loadSettings, textValues } from "./settings";
@@ -11,7 +11,7 @@ interface Route {
   method: string;
   pattern: RegExp;
   handler: Handler;
-  /** 관리자 세션이 있어야 하는가 */
+  /** Cloudflare Access 로 확인된 관리자만 쓸 수 있는가 */
   admin?: boolean;
 }
 
@@ -32,8 +32,6 @@ const ROUTES: Route[] = [
   { method: "GET", pattern: /^\/api\/photos\/(?<id>[^/]+)$/, handler: getPublicPhoto },
   { method: "GET", pattern: /^\/api\/review\/check$/, handler: checkWriteAccess },
 
-  { method: "POST", pattern: /^\/api\/admin\/login$/, handler: login },
-  { method: "POST", pattern: /^\/api\/admin\/logout$/, handler: logout },
   { method: "GET", pattern: /^\/api\/admin\/me$/, handler: admin.me, admin: true },
   { method: "GET", pattern: /^\/api\/admin\/reviews$/, handler: admin.listReviews, admin: true },
   { method: "POST", pattern: /^\/api\/admin\/reviews\/(?<id>[^/]+)\/publish$/, handler: admin.publishReview, admin: true },
@@ -75,8 +73,10 @@ async function route(request: Request, env: Env, now: number): Promise<Response>
     ip: request.headers.get("CF-Connecting-IP") ?? "unknown",
   };
 
-  if (matched.admin && !(await currentSession(ctx))) {
-    return fail(401, "로그인이 필요합니다.");
+  if (matched.admin) {
+    const check = await checkAdmin(ctx);
+    if (!check.ok) return fail(check.status, check.message);
+    ctx.adminEmail = check.email;
   }
   return matched.handler(ctx);
 }
