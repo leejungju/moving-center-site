@@ -771,6 +771,22 @@ describe("업로드 본문 크기 상한 (사진 3장 x 500KB + 512KB)", () => {
     expect((await submitWithToken(env, token, {}, photos)).status).toBe(201);
   });
 
+  it("실제 본문이 선언한 Content-Length 와 다르면 거부하고, 더 길면 그 자리에서 읽기를 멈춘다", async () => {
+    const probe = async (q: string) => readJson<{ result: string; pulled: number }>(await env.mf.dispatchFetch(`${ORIGIN}/__test/body-limit?${q}` as never) as unknown as Response);
+    const longer = await probe(`declared=1000&actual=${4 * LIMIT}&max=${LIMIT}`);
+    expect(longer.result).toBe("error");
+    expect(longer.pulled).toBeLessThanOrEqual(2 * 64 * 1024);
+    expect((await probe(`declared=5000&actual=1000&max=${LIMIT}`)).result).toBe("error");
+    // 상한보다 큰 선언 길이는 본문을 읽지 않고 거부한다(스트림이 만들어질 때 미리 당기는 첫 조각만 있다).
+    expect(await probe(`declared=${LIMIT + 1}&actual=${4 * LIMIT}&max=${LIMIT}`)).toEqual({ result: "too_large", pulled: 64 * 1024 });
+    expect((await probe(`declared=${LIMIT}&actual=${LIMIT}&max=${LIMIT}`)).result).toBe(`read ${LIMIT}`);
+    // Content-Length 가 없으면 바이트 수를 세다가 상한에서 멈춘다.
+    const chunked = await probe(`actual=${4 * LIMIT}&max=${LIMIT}`);
+    expect(chunked.result).toBe("error too_large");
+    expect(chunked.pulled).toBeLessThanOrEqual(LIMIT + 2 * 64 * 1024);
+    expect((await probe(`actual=${LIMIT}&max=${LIMIT}`)).result).toBe(`read ${LIMIT}`);
+  });
+
   it("양식 전체가 상한을 넘으면 413 (Content-Length 가 있을 때와 없을 때 모두)", async () => {
     const jwt = await adminJwt();
     const token = await createToken(env, jwt);

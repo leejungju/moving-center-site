@@ -56,12 +56,21 @@ export async function readBodyLimited(request: Request, maxBytes: number): Promi
 }
 
 /**
- * 본문을 이어 붙이지 않고 그대로 흘려보내며 바이트 수를 센다(본문 복사본을 하나 줄인다).
- * maxBytes 를 넘는 순간 스트림을 오류로 끝내고 원본 읽기를 멈춘다. tooLarge() 로 그 때문에 실패했는지 확인한다.
+ * 본문을 이어 붙이지 않고 그대로 흘려보내며 크기 상한을 건다(본문 복사본을 하나 줄인다).
+ * - Content-Length 가 있으면: 상한을 넘으면 바로 "too_large". 아니면 런타임 내장 FixedLengthStream 에 통과시켜
+ *   실제 본문이 그 길이와 다르면(더 길면 그 순간 읽기를 멈춘다) 오류로 끝낸다. JS 로 조각을 세지 않아 CPU 가 적게 든다.
+ * - 없으면(chunked): 조각마다 바이트 수를 세다가 maxBytes 를 넘는 순간 오류로 끝내고 원본 읽기를 멈춘다.
+ * tooLarge() 로 상한 때문에 실패했는지 확인한다.
  */
 export function limitedBodyStream(request: Request, maxBytes: number): { body: ReadableStream<Uint8Array>; tooLarge(): boolean } | "too_large" {
   const declared = request.headers.get("Content-Length");
   if (declared !== null && Number(declared) > maxBytes) return "too_large";
+  const source = request.body ?? new ReadableStream<Uint8Array>({ start: (c) => c.close() });
+  if (declared !== null && /^\d{1,10}$/.test(declared)) {
+    const fixed = new FixedLengthStream(Number(declared));
+    source.pipeTo(fixed.writable).catch(() => {}); // 길이가 다르면 fixed.readable 쪽에서 오류가 난다.
+    return { body: fixed.readable, tooLarge: () => false };
+  }
   let total = 0;
   let exceeded = false;
   const counter = new TransformStream<Uint8Array, Uint8Array>({
@@ -75,7 +84,6 @@ export function limitedBodyStream(request: Request, maxBytes: number): { body: R
       controller.enqueue(chunk);
     },
   });
-  const source = request.body ?? new ReadableStream<Uint8Array>({ start: (c) => c.close() });
   return { body: source.pipeThrough(counter), tooLarge: () => exceeded };
 }
 
