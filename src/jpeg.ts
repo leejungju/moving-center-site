@@ -1,9 +1,9 @@
 // 올라온 사진 검사: JPEG 인지, 크기가 맞는지, 사진 정보(메타데이터) 구간이 없는지
 //
 // 영상에 필요한 구간과 APP0(JFIF)만 허용한다. APP1~APP15(EXIF, XMP, IPTC 등), COM(주석),
-// 그 밖에 모르는 구간이 하나라도 있으면 거부한다.
+// 그 밖에 모르는 구간이 하나라도 있으면 거부한다. EOI 뒤에 바이트가 남아 있어도 거부한다.
 
-export const MAX_PHOTO_BYTES = 5 * 1024 * 1024;
+import { MAX_PHOTO_BYTES } from "./limits";
 
 export type JpegCheck = "ok" | "not_jpeg" | "too_large" | "has_metadata";
 
@@ -19,6 +19,8 @@ function isImageSegment(marker: number): boolean {
 }
 
 const JFIF = [0x4a, 0x46, 0x49, 0x46, 0x00]; // "JFIF\0"
+// 길이(2) + "JFIF\0"(5) + 판(2) + 단위(1) + 가로·세로 밀도(4) + 미리보기 가로·세로(2)
+const JFIF_APP0_LENGTH = 16;
 
 export function checkJpeg(bytes: Uint8Array): JpegCheck {
   if (bytes.length > MAX_PHOTO_BYTES) return "too_large";
@@ -33,7 +35,7 @@ export function checkJpeg(bytes: Uint8Array): JpegCheck {
       i += 1; // 채움 바이트
       continue;
     }
-    if (marker === 0xd9) return "ok"; // EOI
+    if (marker === 0xd9) return i + 2 === bytes.length ? "ok" : "not_jpeg"; // EOI 뒤에는 아무것도 없어야 한다.
     if (isStandalone(marker)) {
       i += 2;
       continue;
@@ -42,8 +44,9 @@ export function checkJpeg(bytes: Uint8Array): JpegCheck {
     const length = (bytes[i + 2]! << 8) | bytes[i + 3]!;
     if (length < 2) return "not_jpeg";
     if (marker === 0xe0) {
-      // APP0 는 JFIF 머리말만 받는다(JFXX 미리보기 그림 등은 거부).
-      if (length < 2 + JFIF.length || JFIF.some((b, k) => bytes[i + 4 + k] !== b)) return "has_metadata";
+      // APP0 는 미리보기 그림 없는 JFIF 머리말(길이 16, 미리보기 가로·세로 0)만 받는다(JFXX 등은 거부).
+      if (length !== JFIF_APP0_LENGTH || JFIF.some((b, k) => bytes[i + 4 + k] !== b)) return "has_metadata";
+      if (bytes[i + 16] !== 0 || bytes[i + 17] !== 0) return "has_metadata";
     } else if ((marker >= 0xe1 && marker <= 0xef) || marker === 0xfe) {
       return "has_metadata"; // APP1~APP15, COM
     } else if (!isImageSegment(marker)) {

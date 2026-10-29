@@ -55,6 +55,30 @@ export async function readBodyLimited(request: Request, maxBytes: number): Promi
   return out;
 }
 
+/**
+ * 본문을 이어 붙이지 않고 그대로 흘려보내며 바이트 수를 센다(본문 복사본을 하나 줄인다).
+ * maxBytes 를 넘는 순간 스트림을 오류로 끝내고 원본 읽기를 멈춘다. tooLarge() 로 그 때문에 실패했는지 확인한다.
+ */
+export function limitedBodyStream(request: Request, maxBytes: number): { body: ReadableStream<Uint8Array>; tooLarge(): boolean } | "too_large" {
+  const declared = request.headers.get("Content-Length");
+  if (declared !== null && Number(declared) > maxBytes) return "too_large";
+  let total = 0;
+  let exceeded = false;
+  const counter = new TransformStream<Uint8Array, Uint8Array>({
+    transform(chunk, controller) {
+      total += chunk.byteLength;
+      if (total > maxBytes) {
+        exceeded = true;
+        controller.error(new Error("too_large"));
+        return;
+      }
+      controller.enqueue(chunk);
+    },
+  });
+  const source = request.body ?? new ReadableStream<Uint8Array>({ start: (c) => c.close() });
+  return { body: source.pipeThrough(counter), tooLarge: () => exceeded };
+}
+
 export async function readJson(request: Request, maxBytes = 64 * 1024): Promise<Record<string, unknown> | null> {
   const type = request.headers.get("Content-Type") ?? "";
   if (!type.toLowerCase().startsWith("application/json")) return null;

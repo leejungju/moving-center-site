@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { BODY_SLACK_BYTES, MAX_BODY_BYTES, MAX_PHOTO_BYTES } from "../src/limits";
 import {
   call,
   createTestEnv,
@@ -160,6 +161,47 @@ describe("관리자 인증 (Cloudflare Access JWT)", () => {
     expect((await call(env, "/api/admin/me", { jwt, now: NOW + 60 * MINUTE + 61 * 1000 })).status).toBe(401);
   });
 
+  it("exp 경계: 만료 + 60초 직전(1ms 전)은 통과, 그 순간부터 거부", async () => {
+    const jwt = await adminJwt({ exp: NOW_SEC });
+    const edge = (NOW_SEC + 60) * 1000;
+    expect((await call(env, "/api/admin/me", { jwt, now: edge - 1 })).status).toBe(200);
+    expect((await call(env, "/api/admin/me", { jwt, now: edge })).status).toBe(401);
+    expect((await call(env, "/api/admin/me", { jwt, now: edge + 1 })).status).toBe(401);
+  });
+
+  it("nbf 경계: nbf - 60초 직전(1ms 전)은 거부, 그 순간부터 통과", async () => {
+    const jwt = await adminJwt({ nbf: NOW_SEC + 120 });
+    const edge = (NOW_SEC + 120 - 60) * 1000;
+    expect((await call(env, "/api/admin/me", { jwt, now: edge - 1 })).status).toBe(401);
+    expect((await call(env, "/api/admin/me", { jwt, now: edge })).status).toBe(200);
+    expect((await call(env, "/api/admin/me", { jwt, now: edge + 1 })).status).toBe(200);
+  });
+
+  it("email 은 앞뒤 공백을 지우고 ASCII 대소문자만 무시해 비교한다(켈빈 기호 등 ASCII 아닌 글자는 403)", async () => {
+    await withEnv({ ADMIN_EMAIL: "kim@example.com" }, async (c) => {
+      const status = async (email: string) => (await call(c.env, "/api/admin/me", { jwt: await c.access.sign({ email }, { now: NOW }) })).status;
+      expect(await status("kim@example.com")).toBe(200);
+      expect(await status("KIM@Example.COM")).toBe(200);
+      expect(await status("  kim@example.com ")).toBe(200);
+      // U+212A KELVIN SIGN: "\u212Aim".toLowerCase() === "kim"
+      expect("\u212Aim@example.com".toLowerCase()).toBe("kim@example.com");
+      for (const email of ["\u212Aim@example.com", "k\u0131m@example.com", "kim@ex\u0430mple.com", "kim@example.com\u200b", "kim\uff20example.com", "kim@example.com\u0000"]) {
+        expect(await status(email), JSON.stringify(email)).toBe(403);
+      }
+    });
+  });
+
+  it("ADMIN_EMAIL 에 ASCII 가 아닌 글자가 있으면 정상 JWT 도 거부한다", async () => {
+    for (const adminEmail of ["\u212Aim@example.com", "kim@ex\u0430mple.com"]) {
+      await withEnv({ ADMIN_EMAIL: adminEmail }, async (c) => {
+        for (const email of [adminEmail, "kim@example.com"]) {
+          const jwt = await c.access.sign({ email }, { now: NOW });
+          expect((await call(c.env, "/api/admin/me", { jwt })).status, JSON.stringify([adminEmail, email])).toBe(503);
+        }
+      });
+    }
+  });
+
   it("관리자가 아닌 email 은 403", async () => {
     for (const email of ["someone@example.com", "admin@example.com.evil.example", "", undefined]) {
       const res = await call(env, "/api/admin/me", { jwt: await adminJwt({ email }) });
@@ -218,6 +260,63 @@ describe("관리자 인증 (Cloudflare Access JWT)", () => {
       expect(certsCalls(c)).toBe(2);
       expect(c.outboundCalls.every((u) => u === `https://${TEST_TEAM_DOMAIN}/cdn-cgi/access/certs`)).toBe(true);
     });
+  });
+
+  it("공개키 받아오기가 실패하면 거부하고, 30초 동안은 다시 받지 않는다", async () => {
+    const failures = [{ status: 500, body: "{}" }, { status: 302, body: "" }, { status: 200, body: "not json" }, { status: 200, body: '{"keys":"x"}' }, "network"] as const;
+    for (const failure of failures) {
+      await withEnv({}, async (c) => {
+        const label = JSON.stringify(failure);
+        c.certs.reply = () => failure;
+        const jwt = await c.access.sign({}, { now: NOW });
+        for (const at of [0, 10_000, 20_000, 29_999]) {
+          expect((await call(c.env, "/api/admin/me", { jwt, now: NOW + at })).status, `${label} +${at}`).toBe(401);
+        }
+        expect(certsCalls(c), label).toBe(1);
+        // 정상으로 돌아와도 30초가 지나기 전에는 거부, 지나면 다시 받아 통과
+        c.certs.reply = () => null;
+        expect((await call(c.env, "/api/admin/me", { jwt, now: NOW + 29_999 })).status, label).toBe(401);
+        expect(certsCalls(c), label).toBe(1);
+        expect((await call(c.env, "/api/admin/me", { jwt, now: NOW + 30_000 })).status, label).toBe(200);
+        expect(certsCalls(c), label).toBe(2);
+      });
+    }
+  });
+
+  it("정상 캐시가 지난 뒤 받아오기가 실패하면 이전 공개키를 쓰지 않고 거부한다", async () => {
+    await withEnv({}, async (c) => {
+      const jwt = await c.access.sign({}, { now: NOW });
+      expect((await call(c.env, "/api/admin/me", { jwt })).status).toBe(200);
+      c.certs.reply = () => ({ status: 503, body: "" });
+      expect((await call(c.env, "/api/admin/me", { jwt, now: NOW + 59_999 })).status).toBe(200); // 60초 캐시 안
+      expect(certsCalls(c)).toBe(1);
+      expect((await call(c.env, "/api/admin/me", { jwt, now: NOW + 60_000 })).status).toBe(401);
+      expect(certsCalls(c)).toBe(2);
+      c.certs.reply = () => null;
+      expect((await call(c.env, "/api/admin/me", { jwt, now: NOW + 89_999 })).status).toBe(401);
+      expect((await call(c.env, "/api/admin/me", { jwt, now: NOW + 90_000 })).status).toBe(200);
+      expect(certsCalls(c)).toBe(3);
+    });
+  });
+
+  it("빈 공개키 목록(읽을 수 있는 키 0개)은 캐시하지 않고 거부하며, 그 뒤 정상 키가 오면 회복한다", async () => {
+    const empties = [{ keys: [] }, { keys: [{ kid: "test-kid-1", kty: "RSA", n: "!!", e: "AQAB" }] }, { keys: [{ kid: "test-kid-1", kty: "EC", crv: "P-256", x: "a", y: "b" }] }];
+    for (const empty of empties) {
+      await withEnv({}, async (c) => {
+        const label = JSON.stringify(empty);
+        c.certs.reply = () => ({ status: 200, body: JSON.stringify(empty) });
+        const jwt = await c.access.sign({}, { now: NOW });
+        expect((await call(c.env, "/api/admin/me", { jwt })).status, label).toBe(401);
+        expect((await call(c.env, "/api/admin/me", { jwt, now: NOW + 10_000 })).status, label).toBe(401);
+        expect(certsCalls(c), label).toBe(1);
+        c.certs.reply = () => null;
+        expect((await call(c.env, "/api/admin/me", { jwt, now: NOW + 30_000 })).status, label).toBe(200);
+        expect(certsCalls(c), label).toBe(2);
+        // 회복한 뒤에는 정상 캐시(60초)
+        expect((await call(c.env, "/api/admin/me", { jwt, now: NOW + 89_999 })).status, label).toBe(200);
+        expect(certsCalls(c), label).toBe(2);
+      });
+    }
   });
 
   it("앱 자체 로그인·로그아웃 API 는 없다", async () => {
@@ -369,14 +468,44 @@ describe("후기 요청 링크와 후기 작성", () => {
     expect((await submitWithToken(env, token, {}, [fakeJpeg()])).status).toBe(201);
   });
 
-  it("JPEG 가 아니거나 5MB 를 넘거나 4장 이상이면 거부한다", async () => {
+  it("JPEG 가 아니거나 500KB 를 넘거나 4장 이상이면 거부한다", async () => {
     const jwt = await adminJwt();
     const token = await createToken(env, jwt);
     const png = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
     expect((await submitWithToken(env, token, {}, [png])).status).toBe(400);
-    expect((await submitWithToken(env, token, {}, [fakeJpeg({ size: 5 * 1024 * 1024 + 1 })])).status).toBe(400);
+    const tooBig = await submitWithToken(env, token, {}, [fakeJpeg({ size: MAX_PHOTO_BYTES + 1 })]);
+    expect(tooBig.status).toBe(400);
+    expect((await readJson<{ error: string }>(tooBig)).error).toBe("사진 한 장은 500KB 이하여야 합니다.");
+    expect((await submitWithToken(env, token, {}, [fakeJpeg(), fakeJpeg({ size: MAX_PHOTO_BYTES + 1 }), fakeJpeg()])).status).toBe(400);
     expect((await submitWithToken(env, token, {}, [fakeJpeg(), fakeJpeg(), fakeJpeg(), fakeJpeg()])).status).toBe(400);
-    expect((await submitWithToken(env, token, {}, [fakeJpeg({ size: 5 * 1024 * 1024 }), fakeJpeg(), fakeJpeg()])).status).toBe(201);
+    expect((await env.PHOTOS.list()).objects).toHaveLength(0);
+    expect((await submitWithToken(env, token, {}, [fakeJpeg({ size: MAX_PHOTO_BYTES }), fakeJpeg(), fakeJpeg()])).status).toBe(201);
+  });
+
+  it("EOI 뒤에 데이터가 붙었거나 APP0 형식이 틀린 JPEG 는 거부한다", async () => {
+    const jwt = await adminJwt();
+    const token = await createToken(env, jwt);
+    const base = fakeJpeg();
+    const html = [...Buffer.from("<html><script>alert(1)</script></html>")];
+    const payload = new Array<number>(1024).fill(0x41);
+    const longLen = 16 + payload.length;
+    const bad = [
+      new Uint8Array([...base, ...html]),
+      new Uint8Array([...base, ...fakeJpeg({ exif: true })]),
+      new Uint8Array([0xff, 0xd8, 0xff, 0xe0, longLen >> 8, longLen & 0xff, ...base.slice(6, 20), ...payload, ...base.slice(20)]),
+      new Uint8Array([...base.slice(0, 4), 0x00, 0x13, ...base.slice(6, 18), 0x01, 0x01, 0xaa, 0xbb, 0xcc, ...base.slice(20)]),
+    ];
+    for (const [i, photo] of bad.entries()) {
+      expect((await submitWithToken(env, token, {}, [photo])).status, String(i)).toBe(400);
+    }
+    expect((await env.PHOTOS.list()).objects).toHaveLength(0);
+    expect((await submitWithToken(env, token, {}, [base])).status).toBe(201);
+  });
+
+  it("작성 화면 확인 응답은 사진 1장 상한(공용 상수)을 알려 준다", async () => {
+    const token = await createToken(env, await adminJwt());
+    const check = await readJson<{ ok: boolean; maxPhotoBytes: number }>(await call(env, `/api/review/check?t=${token}`));
+    expect(check).toMatchObject({ ok: true, maxPhotoBytes: MAX_PHOTO_BYTES });
   });
 });
 
@@ -591,14 +720,15 @@ describe("공개 후기 양식(토큰 없음)", () => {
   });
 });
 
-describe("업로드 본문 크기 상한 (사진 3장 x 5MB + 1MB)", () => {
-  const LIMIT = 3 * 5 * 1024 * 1024 + 1024 * 1024;
+describe("업로드 본문 크기 상한 (사진 3장 x 500KB + 512KB)", () => {
+  const LIMIT = MAX_BODY_BYTES;
 
   it("Content-Length 없이(chunked) 보낸 초과 본문은 읽다가 멈추고 413", async () => {
     // 상한 + 1MB 까지 보낸 뒤에는 3초 쉬었다가 끝낸다. 서버가 상한에서 멈추면 그 전에 413 을 답하고,
     // 상한 검사가 없다면 본문 끝까지 읽은 뒤 400(양식 오류)이 된다. 쉬는 동안에는 쓰지 않으므로 연결이 끊겨도 시험이 흔들리지 않는다.
     const chunk = new Uint8Array(64 * 1024).fill(0x41);
-    const stopAt = LIMIT + 1024 * 1024;
+    // 조각(64KB) 단위로 보내므로 멈추는 지점도 조각 경계에 맞춘다.
+    const stopAt = Math.ceil((LIMIT + 1024 * 1024) / chunk.byteLength) * chunk.byteLength;
     let pulled = 0;
     const body = new ReadableStream<Uint8Array>({
       async pull(controller) {
@@ -634,11 +764,39 @@ describe("업로드 본문 크기 상한 (사진 3장 x 5MB + 1MB)", () => {
     await body.cancel().catch(() => {});
   });
 
-  it("상한 안의 본문(5MB 사진 3장)은 받는다", async () => {
+  it("상한 안의 본문(500KB 사진 3장)은 받는다", async () => {
     const jwt = await adminJwt();
     const token = await createToken(env, jwt);
-    const photos = [fakeJpeg({ size: 5 * 1024 * 1024 }), fakeJpeg({ size: 5 * 1024 * 1024 }), fakeJpeg({ size: 5 * 1024 * 1024 })];
+    const photos = [fakeJpeg({ size: MAX_PHOTO_BYTES }), fakeJpeg({ size: MAX_PHOTO_BYTES }), fakeJpeg({ size: MAX_PHOTO_BYTES })];
     expect((await submitWithToken(env, token, {}, photos)).status).toBe(201);
+  });
+
+  it("양식 전체가 상한을 넘으면 413 (Content-Length 가 있을 때와 없을 때 모두)", async () => {
+    const jwt = await adminJwt();
+    const token = await createToken(env, jwt);
+    const photos = [fakeJpeg({ size: MAX_PHOTO_BYTES }), fakeJpeg({ size: MAX_PHOTO_BYTES }), fakeJpeg({ size: MAX_PHOTO_BYTES })];
+    const form = reviewForm({ t: token }, photos);
+    form.append("padding", "x".repeat(BODY_SLACK_BYTES));
+    const withLength = await call(env, "/api/reviews", { form });
+    expect(withLength.status).toBe(413);
+
+    // 같은 바이트를 Content-Length 없이(chunked) 보낸다.
+    const encoded = new Response(form);
+    const contentType = encoded.headers.get("Content-Type")!;
+    const bytes = new Uint8Array(await encoded.arrayBuffer());
+    expect(bytes.length).toBeGreaterThan(LIMIT);
+    let sent = 0;
+    const body = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        if (sent >= bytes.length) return controller.close();
+        controller.enqueue(bytes.slice(sent, sent + 64 * 1024));
+        sent += 64 * 1024;
+      },
+    });
+    const chunked = await call(env, "/api/reviews", { body, headers: { "Content-Type": contentType } });
+    expect(chunked.status).toBe(413);
+    expect(await env.DB.prepare("SELECT COUNT(*) AS n FROM reviews").first("n")).toBe(0);
+    expect((await env.PHOTOS.list()).objects).toHaveLength(0);
   });
 });
 

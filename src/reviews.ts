@@ -1,18 +1,17 @@
 // 공개 후기: 목록, 사진, 작성 링크 확인, 후기 제출
 
 import { randomId, sha256Hex } from "./crypto";
-import { fail, json, readBodyLimited } from "./http";
-import { checkJpeg, MAX_PHOTO_BYTES } from "./jpeg";
+import { fail, json, limitedBodyStream } from "./http";
+import { checkJpeg } from "./jpeg";
+import { MAX_BODY_BYTES, MAX_PHOTO_BYTES, MAX_PHOTO_LABEL, MAX_PHOTOS } from "./limits";
 import { loadSettings, openReviewActive } from "./settings";
 import type { Ctx } from "./types";
 
 export const SERVICES = ["가정이사", "원룸이사", "사무실이사", "보관이사"] as const;
 export const TOKEN_TTL_MS = 30 * 24 * 60 * 60 * 1000;
-export const MAX_PHOTOS = 3;
 export const OPEN_REVIEW_DAILY_LIMIT = 3;
 const DAY_MS = 24 * 60 * 60 * 1000;
-/** 후기 제출 본문 상한: 사진 3장 x 5MB + 글·양식 여유 1MB */
-export const MAX_BODY_BYTES = MAX_PHOTOS * MAX_PHOTO_BYTES + 1024 * 1024;
+const PHOTO_TOO_LARGE = `사진 한 장은 ${MAX_PHOTO_LABEL} 이하여야 합니다.`;
 const PUBLIC_PAGE_SIZE = 20;
 
 export interface ReviewRow {
@@ -148,12 +147,12 @@ export async function checkWriteAccess(ctx: Ctx): Promise<Response> {
   const token = ctx.url.searchParams.get("t");
   if (token) {
     const state = await tokenState(ctx, token);
-    if (state === "valid") return json({ ok: true, mode: "invite" });
+    if (state === "valid") return json({ ok: true, mode: "invite", maxPhotoBytes: MAX_PHOTO_BYTES });
     return json({ ok: false, reason: state, message: TOKEN_MESSAGES[state] });
   }
   const stored = await loadSettings(ctx.env);
   if (openReviewActive(stored, ctx.env)) {
-    return json({ ok: true, mode: "open", turnstileSiteKey: stored.turnstile_site_key });
+    return json({ ok: true, mode: "open", turnstileSiteKey: stored.turnstile_site_key, maxPhotoBytes: MAX_PHOTO_BYTES });
   }
   return json({ ok: false, reason: "closed", message: "후기는 업체에서 보내 드린 링크로만 작성할 수 있습니다." });
 }
@@ -184,13 +183,14 @@ export async function submitReview(ctx: Ctx): Promise<Response> {
   if (!contentType.toLowerCase().startsWith("multipart/form-data")) {
     return fail(400, "잘못된 요청입니다.");
   }
-  const body = await readBodyLimited(ctx.request, MAX_BODY_BYTES);
-  if (body === "too_large") return fail(413, "사진 용량이 너무 큽니다.");
+  const limited = limitedBodyStream(ctx.request, MAX_BODY_BYTES);
+  if (limited === "too_large") return fail(413, "사진 용량이 너무 큽니다.");
 
   let form: FormData;
   try {
-    form = await new Response(body, { headers: { "Content-Type": contentType } }).formData();
+    form = await new Response(limited.body, { headers: { "Content-Type": contentType } }).formData();
   } catch {
+    if (limited.tooLarge()) return fail(413, "사진 용량이 너무 큽니다.");
     return fail(400, "잘못된 요청입니다.");
   }
 
@@ -208,10 +208,10 @@ export async function submitReview(ctx: Ctx): Promise<Response> {
   if (files.length > MAX_PHOTOS) return fail(400, "사진은 3장까지 올릴 수 있습니다.");
   const photos: Uint8Array[] = [];
   for (const file of files) {
-    if (file.size > MAX_PHOTO_BYTES) return fail(400, "사진 한 장은 5MB 이하여야 합니다.");
+    if (file.size > MAX_PHOTO_BYTES) return fail(400, PHOTO_TOO_LARGE);
     const bytes = new Uint8Array(await file.arrayBuffer());
     const check = checkJpeg(bytes);
-    if (check === "too_large") return fail(400, "사진 한 장은 5MB 이하여야 합니다.");
+    if (check === "too_large") return fail(400, PHOTO_TOO_LARGE);
     if (check === "not_jpeg") return fail(400, "JPEG 사진만 올릴 수 있습니다.");
     if (check === "has_metadata") return fail(400, "위치 정보 등 사진 정보가 남아 있는 사진은 올릴 수 없습니다.");
     photos.push(bytes);

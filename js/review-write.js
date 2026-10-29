@@ -1,12 +1,18 @@
 // 고객 후기 작성 화면
 // - 링크(?t=토큰) 확인, 또는 공개 후기 양식(관리자가 켠 경우에만)과 Turnstile
 // - 사진은 브라우저에서 긴 변 1600px 이하 JPEG 로 다시 그려 위치 정보 등 사진 정보를 없앤 뒤 올린다.
+//   장당 상한(서버가 /api/review/check 로 알려 주는 maxPhotoBytes) 이하가 될 때까지 품질, 그다음 크기를 낮춘다.
 "use strict";
 
 (function () {
   const MAX_PHOTOS = 3;
-  const MAX_SIDE = 1600;
-  const MAX_BYTES = 5 * 1024 * 1024;
+  /** 긴 변을 이 순서로 줄여 가며 다시 그린다. */
+  const SIDES = [1600, 1280, 1024];
+  /** 각 크기에서 JPEG 품질을 이 순서로 낮춘다. */
+  const QUALITIES = [0.85, 0.75, 0.65, 0.55, 0.5];
+  const PHOTO_TOO_LARGE = "사진이 너무 큽니다. 다른 사진을 골라 주세요.";
+  /** 사진 1장 상한(바이트). 서버(src/limits.ts)에서 받는다. */
+  let maxPhotoBytes = 0;
 
   /**
    * @param {string} id
@@ -93,8 +99,11 @@
     return out;
   }
 
+  /** 상한 안으로 줄이지 못한 사진 */
+  class PhotoTooLargeError extends Error {}
+
   /**
-   * 사진을 다시 그려 메타데이터 없는 JPEG 로 만든다.
+   * 사진을 다시 그려 메타데이터 없는 JPEG 로 만든다. 장당 상한 이하가 되도록 품질과 크기를 낮춘다.
    * @param {File} file
    * @returns {Promise<Blob>}
    */
@@ -104,29 +113,33 @@
       const img = new Image();
       img.src = url;
       await img.decode();
-      const scale = Math.min(1, MAX_SIDE / Math.max(img.naturalWidth, img.naturalHeight));
-      const width = Math.max(1, Math.round(img.naturalWidth * scale));
-      const height = Math.max(1, Math.round(img.naturalHeight * scale));
-      const canvas = document.createElement("canvas");
-      canvas.width = width;
-      canvas.height = height;
-      const g = canvas.getContext("2d");
-      if (!g) throw new Error("canvas");
-      g.fillStyle = "#ffffff";
-      g.fillRect(0, 0, width, height);
-      g.drawImage(img, 0, 0, width, height);
-      let quality = 0.85;
-      for (;;) {
-        const blob = await new Promise(function (resolve) {
-          canvas.toBlob(resolve, "image/jpeg", quality);
-        });
-        if (!(blob instanceof Blob)) throw new Error("toBlob");
-        const stripped = stripJpegSegments(new Uint8Array(await blob.arrayBuffer()));
-        if (!stripped) throw new Error("jpeg");
-        const clean = new Blob([stripped], { type: "image/jpeg" });
-        if (clean.size <= MAX_BYTES - 64 * 1024 || quality <= 0.4) return clean;
-        quality -= 0.15;
+      const longSide = Math.max(img.naturalWidth, img.naturalHeight);
+      let lastScale = 0;
+      for (const side of SIDES) {
+        const scale = Math.min(1, side / longSide);
+        if (scale === lastScale) continue; // 원본이 더 작으면 같은 크기를 다시 그리지 않는다.
+        lastScale = scale;
+        const width = Math.max(1, Math.round(img.naturalWidth * scale));
+        const height = Math.max(1, Math.round(img.naturalHeight * scale));
+        const canvas = document.createElement("canvas");
+        canvas.width = width;
+        canvas.height = height;
+        const g = canvas.getContext("2d");
+        if (!g) throw new Error("canvas");
+        g.fillStyle = "#ffffff";
+        g.fillRect(0, 0, width, height);
+        g.drawImage(img, 0, 0, width, height);
+        for (const quality of QUALITIES) {
+          const blob = await new Promise(function (resolve) {
+            canvas.toBlob(resolve, "image/jpeg", quality);
+          });
+          if (!(blob instanceof Blob)) throw new Error("toBlob");
+          const stripped = stripJpegSegments(new Uint8Array(await blob.arrayBuffer()));
+          if (!stripped) throw new Error("jpeg");
+          if (stripped.length <= maxPhotoBytes) return new Blob([stripped], { type: "image/jpeg" });
+        }
       }
+      throw new PhotoTooLargeError("too large");
     } finally {
       URL.revokeObjectURL(url);
     }
@@ -175,7 +188,7 @@
           const blob = await toCleanJpeg(file);
           photos.push({ blob: blob, url: URL.createObjectURL(blob) });
         } catch (e) {
-          showError("이 사진은 열 수 없습니다. 다른 사진을 골라 주세요.");
+          showError(e instanceof PhotoTooLargeError ? PHOTO_TOO_LARGE : "이 사진은 열 수 없습니다. 다른 사진을 골라 주세요.");
         }
       }
     } finally {
@@ -284,6 +297,11 @@
         showStatus((body && body.message) || "지금은 후기를 작성할 수 없습니다.", "error");
         return;
       }
+      if (typeof body.maxPhotoBytes !== "number" || !(body.maxPhotoBytes > 0)) {
+        showStatus(UNAVAILABLE, "error");
+        return;
+      }
+      maxPhotoBytes = body.maxPhotoBytes;
       if (body.mode === "open") {
         if (typeof body.turnstileSiteKey !== "string" || body.turnstileSiteKey === "") {
           showStatus("지금은 후기를 작성할 수 없습니다.", "error");

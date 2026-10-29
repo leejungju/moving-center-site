@@ -1,7 +1,8 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { accessConfig } from "../src/auth";
+import { accessConfig, normalizeEmail } from "../src/auth";
 import { checkJpeg } from "../src/jpeg";
+import { BODY_SLACK_BYTES, MAX_BODY_BYTES, MAX_PHOTO_BYTES, MAX_PHOTO_LABEL, MAX_PHOTOS } from "../src/limits";
 import { TEXT_FIELDS } from "../src/settings";
 import { fakeJpeg } from "./helpers";
 
@@ -21,6 +22,33 @@ describe("Access 설정값 형식", () => {
     for (const over of [{ CF_ACCESS_AUD: "a".repeat(63) }, { CF_ACCESS_AUD: "g".repeat(64) }, { CF_ACCESS_AUD: undefined }, { ADMIN_EMAIL: "a@example.com,b@example.com" }, { ADMIN_EMAIL: "a@example.com b@example.com" }, { ADMIN_EMAIL: "admin" }, { ADMIN_EMAIL: undefined }]) {
       expect(accessConfig(env(over)), JSON.stringify(over)).toBeNull();
     }
+  });
+  it("관리자 이메일에 ASCII 가 아닌 글자가 있으면 거부한다", () => {
+    // 켈빈 기호(U+212A)는 toLowerCase() 하면 k 가 된다.
+    for (const email of ["\u212Aim@example.com", "admin@ex\u0430mple.com", "admin\u200b@example.com", "admin@example.com\u0000", "\u0130admin@example.com", "admin\uff20example.com"]) {
+      expect(accessConfig(env({ ADMIN_EMAIL: email })), JSON.stringify(email)).toBeNull();
+    }
+  });
+  it("이메일 비교용 정규화: 앞뒤 공백 제거, ASCII 대문자만 소문자로", () => {
+    expect(normalizeEmail("  Admin@Example.COM \t")).toBe("admin@example.com");
+    expect(normalizeEmail("\u212Aim@example.com")).toBeNull();
+    expect(normalizeEmail("ad min@example.com")).toBeNull();
+    expect(normalizeEmail("")).toBeNull();
+  });
+});
+
+describe("사진 크기 상한(공용 상수)", () => {
+  it("장당 500KB(512000 바이트), 본문 3장 x 512000 + 524288", () => {
+    expect(MAX_PHOTOS).toBe(3);
+    expect(MAX_PHOTO_BYTES).toBe(512000);
+    expect(BODY_SLACK_BYTES).toBe(524288);
+    expect(MAX_BODY_BYTES).toBe(3 * 512000 + 524288);
+    expect(MAX_PHOTO_LABEL).toBe("500KB");
+  });
+  it("후기 작성 화면은 상한 값을 직접 정하지 않고 서버에서 받는다", () => {
+    const js = readFileSync("js/review-write.js", "utf8");
+    expect(js).not.toMatch(/1024\s*\*\s*1024|512000|500\s*\*\s*1024/);
+    expect(js).toContain("body.maxPhotoBytes");
   });
 });
 
@@ -50,6 +78,33 @@ describe("JPEG 검사", () => {
     const short = new Uint8Array([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x04, 0x4a, 0x46, 0xff, 0xd9]);
     expect(checkJpeg(short)).toBe("has_metadata");
   });
+  it("APP0 는 길이 16, 미리보기 가로·세로 0 일 때만 받는다", () => {
+    const base = fakeJpeg();
+    // APP0 길이를 늘려 임의 데이터 60KB 를 넣은 경우
+    const payload = new Uint8Array(60 * 1024).fill(0x41);
+    const len = 16 + payload.length;
+    const longApp0 = new Uint8Array([0xff, 0xd8, 0xff, 0xe0, len >> 8, len & 0xff, ...base.slice(6, 20), ...payload, ...base.slice(20)]);
+    expect(checkJpeg(longApp0)).toBe("has_metadata");
+    // 길이를 17 로 1 바이트만 늘린 경우
+    const plusOne = new Uint8Array([...base.slice(0, 4), 0x00, 0x11, ...base.slice(6, 20), 0x00, ...base.slice(20)]);
+    expect(checkJpeg(plusOne)).toBe("has_metadata");
+    // 미리보기 그림 1x1(3바이트)을 넣은 경우: 길이는 형식대로 19
+    const thumb = new Uint8Array([...base.slice(0, 4), 0x00, 0x13, ...base.slice(6, 18), 0x01, 0x01, 0xaa, 0xbb, 0xcc, ...base.slice(20)]);
+    expect(checkJpeg(thumb)).toBe("has_metadata");
+    // 길이 16 인데 미리보기 크기만 0 이 아닌 경우
+    const dims = new Uint8Array(base);
+    dims[18] = 0x01;
+    expect(checkJpeg(dims)).toBe("has_metadata");
+    expect(checkJpeg(base)).toBe("ok");
+  });
+  it("EOI 뒤에 바이트가 남아 있으면 거부", () => {
+    const base = fakeJpeg();
+    expect(checkJpeg(new Uint8Array([...base, 0x00]))).toBe("not_jpeg");
+    expect(checkJpeg(new Uint8Array([...base, ...Buffer.from("<html><script>alert(1)</script></html>")]))).toBe("not_jpeg");
+    // EXIF 가 든 JPEG 를 통째로 붙인 경우
+    expect(checkJpeg(new Uint8Array([...base, ...fakeJpeg({ exif: true })]))).toBe("not_jpeg");
+    expect(checkJpeg(base)).toBe("ok");
+  });
   it("압축 데이터 뒤에 나오는 APP1 도 찾아낸다", () => {
     const base = fakeJpeg();
     const app1 = [0xff, 0xe1, 0x00, 0x08, 0x45, 0x78, 0x69, 0x66, 0x00, 0x00];
@@ -60,9 +115,9 @@ describe("JPEG 검사", () => {
     expect(checkJpeg(new Uint8Array([0x89, 0x50, 0x4e, 0x47]))).toBe("not_jpeg");
     expect(checkJpeg(new Uint8Array([0xff, 0xd8]))).toBe("not_jpeg");
   });
-  it("5MB 를 넘으면 거부", () => {
-    expect(checkJpeg(fakeJpeg({ size: 5 * 1024 * 1024 + 1 }))).toBe("too_large");
-    expect(checkJpeg(fakeJpeg({ size: 5 * 1024 * 1024 }))).toBe("ok");
+  it("500KB(512000 바이트)를 넘으면 거부", () => {
+    expect(checkJpeg(fakeJpeg({ size: 512000 + 1 }))).toBe("too_large");
+    expect(checkJpeg(fakeJpeg({ size: 512000 }))).toBe("ok");
   });
 });
 

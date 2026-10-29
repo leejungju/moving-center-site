@@ -8,10 +8,11 @@ import type { Ctx, Env } from "./types";
 export const ACCESS_JWT_HEADER = "Cf-Access-Jwt-Assertion";
 /** 서버 시계 차이 허용 범위(초) */
 export const CLOCK_SKEW_SEC = 60;
-/** Access 공개키를 다시 받아 오는 주기 */
-export const JWKS_TTL_MS = 60 * 60 * 1000;
-/** 모르는 kid 가 와도 이 시간 안에는 공개키를 다시 받지 않는다(외부 요청 남발 방지) */
-export const JWKS_REFETCH_MIN_MS = 60 * 1000;
+/** 키가 1개 이상인 정상 공개키 응답을 캐시하는 시간. 모르는 kid 가 와도 이 시간 안에는 다시 받지 않는다(외부 요청 남발 방지). */
+export const JWKS_TTL_MS = 60 * 1000;
+/** 공개키 받아오기가 실패(빈 목록 포함)하면 이 시간 동안 다시 받지 않고 관리자 요청을 거부한다. */
+export const JWKS_FAILURE_TTL_MS = 30 * 1000;
+const JWKS_FETCH_TIMEOUT_MS = 5000;
 const MAX_JWT_LENGTH = 8 * 1024;
 
 // 팀 도메인은 이 형식만 받는다. 다른 주소의 공개키를 믿게 만들 수 없다.
@@ -20,6 +21,8 @@ const TEAM_DOMAIN_PATTERN = /^[a-z0-9-]+\.cloudflareaccess\.com$/;
 const AUD_PATTERN = /^[0-9a-f]{64}$/;
 // 관리자 이메일 1개. 쉼표 등으로 여러 개를 넣을 수 없다.
 const EMAIL_PATTERN = /^[^\s@,;<>"']+@[^\s@,;<>"']+\.[^\s@,;<>"']+$/;
+// 이메일은 공백 없는 ASCII 글자만 받는다(유니코드 소문자화로 다른 글자가 같아지는 것을 막는다).
+const ASCII_EMAIL_CHARS = /^[\x21-\x7e]+$/;
 
 export interface AccessConfig {
   teamDomain: string;
@@ -27,14 +30,21 @@ export interface AccessConfig {
   adminEmail: string;
 }
 
+/** 앞뒤 공백을 지우고 ASCII 대문자만 소문자로 바꾼다. ASCII 가 아닌 글자가 있으면 null. */
+export function normalizeEmail(value: string): string | null {
+  const text = value.trim();
+  if (!ASCII_EMAIL_CHARS.test(text)) return null;
+  return text.replace(/[A-Z]/g, (c) => String.fromCharCode(c.charCodeAt(0) + 32));
+}
+
 /** 환경 변수 3개가 모두 있고 형식이 맞을 때만 설정을 돌려준다. */
 export function accessConfig(env: Env): AccessConfig | null {
   const teamDomain = (env.CF_ACCESS_TEAM_DOMAIN ?? "").trim();
   const aud = (env.CF_ACCESS_AUD ?? "").trim();
-  const adminEmail = (env.ADMIN_EMAIL ?? "").trim().toLowerCase();
+  const adminEmail = normalizeEmail(env.ADMIN_EMAIL ?? "");
   if (!TEAM_DOMAIN_PATTERN.test(teamDomain)) return null;
   if (!AUD_PATTERN.test(aud)) return null;
-  if (!EMAIL_PATTERN.test(adminEmail)) return null;
+  if (adminEmail === null || !EMAIL_PATTERN.test(adminEmail)) return null;
   return { teamDomain, aud, adminEmail };
 }
 
@@ -48,6 +58,8 @@ interface KeyCache {
 
 // 같은 워커 인스턴스 안에서만 유지되는 메모리 캐시
 let keyCache: KeyCache | null = null;
+// 마지막 받아오기 실패(음성 캐시)
+let keyFailure: { teamDomain: string; failedAt: number } | null = null;
 
 const RSA_PARAMS = { name: "RSASSA-PKCS1-v1_5", hash: "SHA-256" } as const;
 
@@ -56,6 +68,7 @@ async function fetchKeys(teamDomain: string): Promise<Map<string, CryptoKey> | n
     const res = await fetch(`https://${teamDomain}/cdn-cgi/access/certs`, {
       headers: { Accept: "application/json" },
       redirect: "manual",
+      signal: AbortSignal.timeout(JWKS_FETCH_TIMEOUT_MS),
     });
     if (res.status !== 200) return null;
     const data = (await res.json()) as { keys?: unknown };
@@ -79,15 +92,19 @@ async function fetchKeys(teamDomain: string): Promise<Map<string, CryptoKey> | n
 
 async function signingKey(teamDomain: string, kid: string, now: number): Promise<CryptoKey | null> {
   const cached = keyCache && keyCache.teamDomain === teamDomain ? keyCache : null;
-  if (cached && now - cached.fetchedAt < JWKS_TTL_MS) {
-    const key = cached.keys.get(kid);
-    if (key) return key;
-    // 키가 바뀌었을 수 있으니 다시 받되, 너무 자주 받지는 않는다.
-    if (now - cached.fetchedAt < JWKS_REFETCH_MIN_MS) return null;
-  }
+  // 캐시 안에 없는 kid 는 캐시가 지난 뒤에야 다시 받는다.
+  if (cached && now - cached.fetchedAt < JWKS_TTL_MS) return cached.keys.get(kid) ?? null;
+  // 최근에 실패했으면 다시 받지 않고 거부한다.
+  if (keyFailure && keyFailure.teamDomain === teamDomain && now - keyFailure.failedAt < JWKS_FAILURE_TTL_MS) return null;
   const keys = await fetchKeys(teamDomain);
-  if (!keys) return null;
+  if (!keys || keys.size === 0) {
+    // 실패나 빈 목록은 정상 캐시에 넣지 않는다(이전 캐시도 쓰지 않는다).
+    keyCache = null;
+    keyFailure = { teamDomain, failedAt: now };
+    return null;
+  }
   keyCache = { teamDomain, fetchedAt: now, keys };
+  keyFailure = null;
   return keys.get(kid) ?? null;
 }
 
@@ -145,8 +162,9 @@ export async function checkAdmin(ctx: Ctx): Promise<AdminCheck> {
   if (!token) return { ok: false, status: 401, message: "로그인이 필요합니다." };
   const claims = await verifyAccessJwt(token, config, ctx.now);
   if (!claims) return { ok: false, status: 401, message: "로그인이 필요합니다." };
-  if (typeof claims.email !== "string" || claims.email.toLowerCase() !== config.adminEmail) {
+  const email = typeof claims.email === "string" ? normalizeEmail(claims.email) : null;
+  if (email === null || email !== config.adminEmail) {
     return { ok: false, status: 403, message: "이 계정은 관리자로 등록되어 있지 않습니다." };
   }
-  return { ok: true, email: claims.email.toLowerCase() };
+  return { ok: true, email };
 }

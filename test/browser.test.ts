@@ -2,6 +2,7 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { chromium, type Browser, type Page } from "playwright";
 import { checkJpeg } from "../src/jpeg";
+import { MAX_PHOTO_BYTES } from "../src/limits";
 // @ts-expect-error 타입 선언 없는 .mjs 도우미
 import { apiClient, attachAccessHeader, startLocalServer } from "../scripts/local-server.mjs";
 
@@ -151,6 +152,69 @@ describe("브라우저 시험", () => {
     const bytes = new Uint8Array(await photo.arrayBuffer());
     expect(checkJpeg(bytes)).toBe("ok");
     expect(jpegSize(bytes)).toEqual({ width: 1600, height: 1200 });
+  });
+
+  it("500KB 를 넘는 사진은 품질·크기를 낮춰 올리고, 그래도 넘으면 다른 사진을 고르라고 안내한다", async () => {
+    const link = await newReviewLink();
+    const page = await browser.newPage();
+    await page.goto(server.url + "/");
+    // 압축이 거의 안 되는 잡음 PNG. 1600x1200 은 품질 0.5 에서도 500KB 를 넘어 1280px 로 줄여야 한다.
+    const noisePng = async (w: number, h: number) =>
+      Buffer.from(
+        (await page.evaluate(`(async () => {
+          const c = document.createElement("canvas");
+          c.width = ${w};
+          c.height = ${h};
+          const g = c.getContext("2d");
+          const data = g.createImageData(${w}, ${h});
+          let x = 12345;
+          for (let i = 0; i < data.data.length; i++) {
+            x = (x * 1103515245 + 12345) >>> 0;
+            data.data[i] = i % 4 === 3 ? 255 : x >>> 24;
+          }
+          g.putImageData(data, 0, 0);
+          const blob = await new Promise((r) => c.toBlob(r, "image/png"));
+          return Array.from(new Uint8Array(await blob.arrayBuffer()));
+        })()`)) as number[],
+      );
+    const big = await noisePng(1600, 1200);
+    const small = await noisePng(1024, 768);
+
+    // Chromium 은 긴 변 1024px·품질 0.5 에서 잡음 사진도 500KB 를 넘지 않는다. 안내 문구 경로는
+    // 서버가 알려 주는 상한을 작게(20KB) 바꿔 확인한다(화면이 서버 값을 쓰는지도 함께 확인된다).
+    const limited = await browser.newPage();
+    await limited.route("**/api/review/check*", async (route) => {
+      const res = await route.fetch();
+      await route.fulfill({ response: res, json: { ...(await res.json()), maxPhotoBytes: 20_000 } });
+    });
+    await limited.goto(link);
+    await limited.waitForSelector("#review-form:not([hidden])");
+    await limited.setInputFiles("#photo-input", { name: "small.png", mimeType: "image/png", buffer: small });
+    await limited.waitForSelector("#form-error:not([hidden])");
+    expect(await limited.textContent("#form-error")).toBe("사진이 너무 큽니다. 다른 사진을 골라 주세요.");
+    expect(await limited.locator("#photo-previews img").count()).toBe(0);
+    await limited.close();
+
+    await page.goto(link);
+    await page.waitForSelector("#review-form:not([hidden])");
+    await page.fill("#nickname", "테스트 고객");
+    await page.check("input[name=service][value=보관이사]", { force: true });
+    await page.fill("#content", "큰 사진 줄이기 시험용 테스트 후기입니다.");
+    await page.setInputFiles("#photo-input", { name: "big.png", mimeType: "image/png", buffer: big });
+    await page.waitForSelector("#photo-previews img");
+    await page.check("#consent");
+    await page.click("#submit-button");
+    await page.waitForSelector("#status.notice-ok");
+    await page.close();
+
+    const pending = await admin.call("GET", "/api/admin/reviews?status=pending");
+    const review = pending.data.reviews.find((r: { content: string }) => r.content.startsWith("큰 사진 줄이기"));
+    expect(review.photos).toHaveLength(1);
+    const photo = await fetch(server.url + review.photos[0].url, { headers: { "Cf-Access-Jwt-Assertion": await adminToken() } });
+    const bytes = new Uint8Array(await photo.arrayBuffer());
+    expect(checkJpeg(bytes)).toBe("ok");
+    expect(bytes.length).toBeLessThanOrEqual(MAX_PHOTO_BYTES);
+    expect(jpegSize(bytes)).toEqual({ width: 1280, height: 960 });
   });
 
   it("만료·사용된 링크는 안내 문구만 보여 준다", async () => {

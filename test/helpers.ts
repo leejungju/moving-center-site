@@ -42,6 +42,8 @@ export interface TestContext {
   outboundCalls: string[];
   /** Turnstile 확인 요청을 받을 가짜 응답. 받은 양식을 넘겨준다. */
   turnstile: { reply: (form: FormData) => Record<string, unknown> };
+  /** Access 공개키 요청에 돌려줄 응답을 바꾼다. reply 가 null 을 돌려주면 정상 공개키 목록, "network" 면 연결 실패. */
+  certs: { reply: () => { status: number; body: string } | "network" | null };
   dispose(): Promise<void>;
 }
 
@@ -60,6 +62,7 @@ export async function createTestEnv(bindings: Record<string, string | undefined>
   const access = (await createTestAccess()) as TestAccess;
   const outboundCalls: string[] = [];
   const turnstile: TestContext["turnstile"] = { reply: () => ({ success: false }) };
+  const certs: TestContext["certs"] = { reply: () => null };
   const merged: Record<string, string> = {};
   for (const [k, v] of Object.entries({ ...accessBindings(), ...bindings })) if (typeof v === "string") merged[k] = v;
 
@@ -78,7 +81,12 @@ export async function createTestEnv(bindings: Record<string, string | undefined>
             outboundCalls.push(request.url);
             const url = new URL(request.url);
             const json = (data: unknown) => new MfResponse(JSON.stringify(data), { headers: { "Content-Type": "application/json" } });
-            if (url.pathname === "/cdn-cgi/access/certs") return json(access.jwks);
+            if (url.pathname === "/cdn-cgi/access/certs") {
+              const override = certs.reply();
+              if (override === "network") throw new Error("연결 실패(시험)");
+              if (override) return new MfResponse(override.body, { status: override.status, headers: { "Content-Type": "application/json" } });
+              return json(access.jwks);
+            }
             if (request.url === TURNSTILE_VERIFY_URL) return json(turnstile.reply(await request.formData()));
             return new MfResponse("외부 요청 차단(시험)", { status: 599 });
           },
@@ -94,6 +102,7 @@ export async function createTestEnv(bindings: Record<string, string | undefined>
     access,
     outboundCalls,
     turnstile,
+    certs,
     async dispose() {
       await mf.dispose();
     },
