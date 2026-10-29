@@ -1,0 +1,322 @@
+// 고객 후기 작성 화면
+// - 링크(?t=토큰) 확인, 또는 공개 후기 양식(관리자가 켠 경우에만)과 Turnstile
+// - 사진은 브라우저에서 긴 변 1600px 이하 JPEG 로 다시 그려 위치 정보 등 사진 정보를 없앤 뒤 올린다.
+//   장당 상한(서버가 /api/review/check 로 알려 주는 maxPhotoBytes) 이하가 될 때까지 품질, 그다음 크기를 낮춘다.
+"use strict";
+
+(function () {
+  const MAX_PHOTOS = 3;
+  /** 긴 변을 이 순서로 줄여 가며 다시 그린다. */
+  const SIDES = [1600, 1280, 1024];
+  /** 각 크기에서 JPEG 품질을 이 순서로 낮춘다. */
+  const QUALITIES = [0.85, 0.75, 0.65, 0.55, 0.5];
+  const PHOTO_TOO_LARGE = "사진이 너무 큽니다. 다른 사진을 골라 주세요.";
+  /** 사진 1장 상한(바이트). 서버(src/limits.ts)에서 받는다. */
+  let maxPhotoBytes = 0;
+
+  /**
+   * @param {string} id
+   * @returns {HTMLElement}
+   */
+  function byId(id) {
+    const el = document.getElementById(id);
+    if (!el) throw new Error("missing #" + id);
+    return el;
+  }
+
+  const status = byId("status");
+  const form = /** @type {HTMLFormElement} */ (byId("review-form"));
+  const errorBox = byId("form-error");
+  const submitButton = /** @type {HTMLButtonElement} */ (byId("submit-button"));
+  const content = /** @type {HTMLTextAreaElement} */ (byId("content"));
+  const counter = byId("content-count");
+  const photoInput = /** @type {HTMLInputElement} */ (byId("photo-input"));
+  const photoButton = /** @type {HTMLButtonElement} */ (byId("photo-button"));
+  const previews = byId("photo-previews");
+
+  const token = new URLSearchParams(window.location.search).get("t") || "";
+  /** @type {{ blob: Blob, url: string }[]} */
+  const photos = [];
+
+  /**
+   * @param {string} message
+   * @param {string} [kind]
+   */
+  function showStatus(message, kind) {
+    status.textContent = message;
+    status.className = "notice" + (kind ? " notice-" + kind : "");
+    status.hidden = false;
+  }
+
+  /** @param {string} message */
+  function showError(message) {
+    errorBox.textContent = message;
+    errorBox.hidden = message === "";
+  }
+
+  function updateCounter() {
+    counter.textContent = [...content.value].length + " / 1000";
+  }
+
+  /**
+   * 브라우저가 만든 JPEG 에서 APP1~APP15(ICC 색 정보 등)·COM 구간을 뺀다.
+   * 서버는 APP0(JFIF)과 영상 데이터 구간만 받는다.
+   * @param {Uint8Array} bytes
+   * @returns {Uint8Array<ArrayBuffer> | null}
+   */
+  function stripJpegSegments(bytes) {
+    if (bytes.length < 4 || bytes[0] !== 0xff || bytes[1] !== 0xd8) return null;
+    /** @type {Uint8Array[]} */
+    const keep = [bytes.subarray(0, 2)];
+    let i = 2;
+    while (i + 3 < bytes.length) {
+      if (bytes[i] !== 0xff) return null;
+      const marker = bytes[i + 1];
+      if (marker === 0xff) {
+        i += 1;
+        continue;
+      }
+      if (marker === 0xda) {
+        keep.push(bytes.subarray(i)); // SOS 부터 끝까지(영상 데이터)
+        break;
+      }
+      const length = (bytes[i + 2] << 8) | bytes[i + 3];
+      if (length < 2 || i + 2 + length > bytes.length) return null;
+      const drop = (marker >= 0xe1 && marker <= 0xef) || marker === 0xfe;
+      if (!drop) keep.push(bytes.subarray(i, i + 2 + length));
+      i += 2 + length;
+    }
+    let total = 0;
+    keep.forEach(function (part) {
+      total += part.length;
+    });
+    const out = new Uint8Array(total);
+    let offset = 0;
+    keep.forEach(function (part) {
+      out.set(part, offset);
+      offset += part.length;
+    });
+    return out;
+  }
+
+  /** 상한 안으로 줄이지 못한 사진 */
+  class PhotoTooLargeError extends Error {}
+
+  /**
+   * 사진을 다시 그려 메타데이터 없는 JPEG 로 만든다. 장당 상한 이하가 되도록 품질과 크기를 낮춘다.
+   * @param {File} file
+   * @returns {Promise<Blob>}
+   */
+  async function toCleanJpeg(file) {
+    const url = URL.createObjectURL(file);
+    try {
+      const img = new Image();
+      img.src = url;
+      await img.decode();
+      const longSide = Math.max(img.naturalWidth, img.naturalHeight);
+      let lastScale = 0;
+      for (const side of SIDES) {
+        const scale = Math.min(1, side / longSide);
+        if (scale === lastScale) continue; // 원본이 더 작으면 같은 크기를 다시 그리지 않는다.
+        lastScale = scale;
+        const width = Math.max(1, Math.round(img.naturalWidth * scale));
+        const height = Math.max(1, Math.round(img.naturalHeight * scale));
+        const canvas = document.createElement("canvas");
+        canvas.width = width;
+        canvas.height = height;
+        const g = canvas.getContext("2d");
+        if (!g) throw new Error("canvas");
+        g.fillStyle = "#ffffff";
+        g.fillRect(0, 0, width, height);
+        g.drawImage(img, 0, 0, width, height);
+        for (const quality of QUALITIES) {
+          const blob = await new Promise(function (resolve) {
+            canvas.toBlob(resolve, "image/jpeg", quality);
+          });
+          if (!(blob instanceof Blob)) throw new Error("toBlob");
+          const stripped = stripJpegSegments(new Uint8Array(await blob.arrayBuffer()));
+          if (!stripped) throw new Error("jpeg");
+          if (stripped.length <= maxPhotoBytes) return new Blob([stripped], { type: "image/jpeg" });
+        }
+      }
+      throw new PhotoTooLargeError("too large");
+    } finally {
+      URL.revokeObjectURL(url);
+    }
+  }
+
+  function renderPreviews() {
+    previews.replaceChildren();
+    photos.forEach(function (photo, index) {
+      const box = document.createElement("div");
+      box.className = "photo-preview";
+      const img = document.createElement("img");
+      img.src = photo.url;
+      img.alt = "고른 사진 " + (index + 1);
+      const remove = document.createElement("button");
+      remove.type = "button";
+      remove.className = "btn btn-danger btn-small";
+      remove.textContent = "빼기";
+      remove.addEventListener("click", function () {
+        URL.revokeObjectURL(photo.url);
+        photos.splice(index, 1);
+        renderPreviews();
+      });
+      box.appendChild(img);
+      box.appendChild(remove);
+      previews.appendChild(box);
+    });
+    photoButton.hidden = photos.length >= MAX_PHOTOS;
+  }
+
+  photoButton.addEventListener("click", function () {
+    photoInput.click();
+  });
+
+  photoInput.addEventListener("change", async function () {
+    const files = Array.from(photoInput.files || []);
+    photoInput.value = "";
+    showError("");
+    if (photos.length + files.length > MAX_PHOTOS) {
+      showError("사진은 3장까지 올릴 수 있습니다.");
+    }
+    photoButton.disabled = true;
+    photoButton.textContent = "사진 준비 중…";
+    try {
+      for (const file of files.slice(0, MAX_PHOTOS - photos.length)) {
+        try {
+          const blob = await toCleanJpeg(file);
+          photos.push({ blob: blob, url: URL.createObjectURL(blob) });
+        } catch (e) {
+          showError(e instanceof PhotoTooLargeError ? PHOTO_TOO_LARGE : "이 사진은 열 수 없습니다. 다른 사진을 골라 주세요.");
+        }
+      }
+    } finally {
+      photoButton.disabled = false;
+      photoButton.textContent = "사진 고르기";
+      renderPreviews();
+    }
+  });
+
+  content.addEventListener("input", updateCounter);
+
+  /**
+   * @param {string} siteKey
+   */
+  function loadTurnstile(siteKey) {
+    const box = byId("turnstile-box");
+    const widget = document.createElement("div");
+    widget.className = "cf-turnstile";
+    widget.setAttribute("data-sitekey", siteKey);
+    widget.setAttribute("data-language", "ko");
+    box.appendChild(widget);
+    box.hidden = false;
+    const script = document.createElement("script");
+    script.src = "https://challenges.cloudflare.com/turnstile/v0/api.js";
+    script.async = true;
+    document.head.appendChild(script);
+  }
+
+  /**
+   * @returns {string}
+   */
+  function validate() {
+    const nickname = /** @type {HTMLInputElement} */ (byId("nickname")).value.trim();
+    const length = [...nickname].length;
+    if (length < 2 || length > 10) return "별명은 2~10자로 적어 주세요.";
+    if (!form.querySelector('input[name="service"]:checked')) return "이용하신 서비스를 골라 주세요.";
+    const text = content.value.trim();
+    const textLength = [...text].length;
+    if (textLength < 10 || textLength > 1000) return "후기 내용은 10~1000자로 적어 주세요.";
+    if (!(/** @type {HTMLInputElement} */ (byId("consent")).checked)) return "개인정보 수집·이용 안내에 동의해 주세요.";
+    return "";
+  }
+
+  form.addEventListener("submit", async function (event) {
+    event.preventDefault();
+    const problem = validate();
+    if (problem) {
+      showError(problem);
+      return;
+    }
+    showError("");
+    const data = new FormData(form);
+    data.delete("photos");
+    photos.forEach(function (photo, i) {
+      data.append("photos", photo.blob, "photo" + (i + 1) + ".jpg");
+    });
+    if (token) data.set("t", token);
+    submitButton.disabled = true;
+    submitButton.textContent = "보내는 중…";
+    try {
+      const res = await fetch("/api/reviews", { method: "POST", body: data, credentials: "same-origin" });
+      const body = await res.json().catch(function () {
+        return null;
+      });
+      if (res.ok && body && body.ok) {
+        form.hidden = true;
+        showStatus(body.message || "후기가 접수되었습니다. 감사합니다.", "ok");
+        window.scrollTo(0, 0);
+        return;
+      }
+      const message = (body && body.error) || "보내지 못했습니다. 잠시 후 다시 해 주세요.";
+      if (res.status === 410) {
+        // 그사이 링크가 사용됐거나 기간이 지났다.
+        form.hidden = true;
+        showStatus(message, "error");
+      } else {
+        showError(message);
+      }
+    } catch (e) {
+      showError("인터넷 연결을 확인한 뒤 다시 해 주세요.");
+    } finally {
+      submitButton.disabled = false;
+      submitButton.textContent = "후기 보내기";
+    }
+  });
+
+  const UNAVAILABLE = "이 주소에서는 사용할 수 없습니다. 업체에서 받은 링크로 다시 열어 주세요.";
+
+  async function start() {
+    let body = null;
+    try {
+      const url = "/api/review/check" + (token ? "?t=" + encodeURIComponent(token) : "");
+      const res = await fetch(url, { headers: { Accept: "application/json" } });
+      const type = res.headers.get("Content-Type") || "";
+      if (type.toLowerCase().startsWith("application/json")) body = await res.json();
+    } catch (e) {
+      body = null;
+    }
+    // API 가 없는 주소(GitHub Pages 등)에서는 입력 칸 없이 안내만 보여 준다.
+    if (!body || typeof body.ok !== "boolean") {
+      showStatus(UNAVAILABLE, "error");
+      return;
+    }
+    try {
+      if (body.ok !== true) {
+        showStatus((body && body.message) || "지금은 후기를 작성할 수 없습니다.", "error");
+        return;
+      }
+      if (typeof body.maxPhotoBytes !== "number" || !(body.maxPhotoBytes > 0)) {
+        showStatus(UNAVAILABLE, "error");
+        return;
+      }
+      maxPhotoBytes = body.maxPhotoBytes;
+      if (body.mode === "open") {
+        if (typeof body.turnstileSiteKey !== "string" || body.turnstileSiteKey === "") {
+          showStatus("지금은 후기를 작성할 수 없습니다.", "error");
+          return;
+        }
+        byId("privacy-open").hidden = false;
+        loadTurnstile(body.turnstileSiteKey);
+      }
+      status.hidden = true;
+      form.hidden = false;
+      updateCounter();
+    } catch (e) {
+      showStatus(UNAVAILABLE, "error");
+    }
+  }
+
+  start();
+})();

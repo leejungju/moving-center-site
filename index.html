@@ -22,6 +22,7 @@
         <a href="#services">서비스</a>
         <a href="#regions">서비스 지역</a>
         <a href="#process">이용 절차</a>
+        <a id="nav-reviews" href="#reviews" hidden>고객 후기</a>
         <a href="#quote">견적 문의</a>
       </nav>
       <a class="header-call" href="tel:16617624">1661&#8209;7624</a>
@@ -32,12 +33,12 @@
     <!-- 1. 첫 화면 -->
     <section class="hero" aria-labelledby="hero-title">
       <div class="container hero-inner">
-        <p class="hero-badge">전국 포장이사 · 무료 방문 견적</p>
+        <p class="hero-badge" data-setting="hero_badge">전국 포장이사 · 무료 방문 견적</p>
         <h1 id="hero-title">
           <span class="hero-hanja">名品</span> 포장이사공사<br>
           <span class="hero-brand">대한익스프레스</span>
         </h1>
-        <p class="hero-lead">포장부터 정리까지, 짐 하나하나를 내 집처럼 꼼꼼하게 옮겨 드립니다.</p>
+        <p class="hero-lead" data-setting="hero_lead">포장부터 정리까지, 짐 하나하나를 내 집처럼 꼼꼼하게 옮겨 드립니다.</p>
         <div class="hero-actions">
           <a class="btn btn-primary btn-lg" href="#quote">무료 견적 문의</a>
           <a class="btn btn-call btn-lg" href="tel:16617624"><span class="btn-call-label">전화&nbsp;상담</span><span class="btn-call-number">1661&#8209;7624</span></a>
@@ -60,22 +61,22 @@
           <article class="card">
             <div class="card-icon" aria-hidden="true">🏠</div>
             <h3>가정이사</h3>
-            <p>아파트·주택 등 가정집 이사. 포장, 운반, 가구 배치와 정리까지 한 번에 진행합니다.</p>
+            <p data-setting="service_home_desc">아파트·주택 등 가정집 이사. 포장, 운반, 가구 배치와 정리까지 한 번에 진행합니다.</p>
           </article>
           <article class="card">
             <div class="card-icon" aria-hidden="true">🛏️</div>
             <h3>원룸이사</h3>
-            <p>1인 가구·소형 이사. 짐 양에 맞는 차량으로 부담 없이 이사할 수 있습니다.</p>
+            <p data-setting="service_oneroom_desc">1인 가구·소형 이사. 짐 양에 맞는 차량으로 부담 없이 이사할 수 있습니다.</p>
           </article>
           <article class="card">
             <div class="card-icon" aria-hidden="true">🏢</div>
             <h3>사무실이사</h3>
-            <p>사무용 가구, PC, 서류 등 업무 공간 이전. 업무 공백을 줄이도록 일정을 협의합니다.</p>
+            <p data-setting="service_office_desc">사무용 가구, PC, 서류 등 업무 공간 이전. 업무 공백을 줄이도록 일정을 협의합니다.</p>
           </article>
           <article class="card">
             <div class="card-icon" aria-hidden="true">📦</div>
             <h3>보관이사</h3>
-            <p>입주 날짜가 맞지 않을 때 짐을 보관했다가 원하는 날 새 집으로 옮겨 드립니다.</p>
+            <p data-setting="service_storage_desc">입주 날짜가 맞지 않을 때 짐을 보관했다가 원하는 날 새 집으로 옮겨 드립니다.</p>
           </article>
         </div>
       </div>
@@ -207,70 +208,92 @@
           <li class="step">
             <span class="step-num">1</span>
             <h3>문의</h3>
-            <p>전화 또는 견적 문의 양식으로 이사 일정과 지역을 알려 주세요.</p>
+            <p data-setting="step1_desc">전화 또는 견적 문의 양식으로 이사 일정과 지역을 알려 주세요.</p>
           </li>
           <li class="step">
             <span class="step-num">2</span>
             <h3>방문 견적</h3>
-            <p>담당자가 방문해 짐의 양과 현장 여건을 확인하고 견적을 안내합니다.</p>
+            <p data-setting="step2_desc">담당자가 방문해 짐의 양과 현장 여건을 확인하고 견적을 안내합니다.</p>
           </li>
           <li class="step">
             <span class="step-num">3</span>
             <h3>계약</h3>
-            <p>작업 범위와 비용, 일정을 확인한 뒤 계약을 진행합니다.</p>
+            <p data-setting="step3_desc">작업 범위와 비용, 일정을 확인한 뒤 계약을 진행합니다.</p>
           </li>
           <li class="step">
             <span class="step-num">4</span>
             <h3>이사 당일</h3>
-            <p>약속한 시간에 도착해 포장, 운반, 배치를 진행합니다.</p>
+            <p data-setting="step4_desc">약속한 시간에 도착해 포장, 운반, 배치를 진행합니다.</p>
           </li>
           <li class="step">
             <span class="step-num">5</span>
             <h3>정리 확인</h3>
-            <p>정리 상태를 고객과 함께 확인하고 작업을 마무리합니다.</p>
+            <p data-setting="step5_desc">정리 상태를 고객과 함께 확인하고 작업을 마무리합니다.</p>
           </li>
         </ol>
       </div>
     </section>
 
-    <!-- 4. 견적 문의 양식 -->
-    <section id="quote" class="section section-alt" aria-labelledby="quote-title">
+    <!-- 4. 고객 후기 (후기 API 가 없거나 공개된 후기가 없으면 숨김) -->
+    <section id="reviews" class="section section-alt" aria-labelledby="reviews-title" hidden>
+      <div class="container">
+        <h2 id="reviews-title" class="section-title">고객 후기</h2>
+        <p class="section-desc">대한익스프레스와 함께 이사하신 고객님들이 남겨 주신 후기입니다.</p>
+        <div id="review-list" class="review-list"></div>
+        <div class="review-more-wrap">
+          <button id="review-more" type="button" class="btn btn-outline" hidden>후기 더 보기</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- 5. 견적 문의 -->
+    <section id="quote" class="section" aria-labelledby="quote-title">
       <div class="container quote-wrap">
         <div class="quote-intro">
           <h2 id="quote-title" class="section-title">무료 견적 문의</h2>
-          <p class="section-desc">아래 양식을 작성하시거나 전화로 바로 문의하세요.</p>
+          <p class="section-desc">전화로 바로 문의하시거나, 휴대폰에서는 문자로 견적을 문의하실 수 있습니다.</p>
           <a class="btn btn-call btn-block" href="tel:16617624"><span class="btn-call-label">전화&nbsp;문의</span><span class="btn-call-number">1661&#8209;7624</span></a>
-          <button type="button" class="btn btn-kakao btn-block">카카오톡 문의</button>
+          <a id="kakao-chat" class="btn btn-kakao btn-block" href="https://pf.kakao.com/" target="_blank" rel="noopener noreferrer" hidden>카카오톡 문의</a>
         </div>
-        <form id="quote-form" class="quote-form" action="#" method="post" novalidate>
+        <form id="sms-form" class="quote-form" novalidate hidden>
+          <h3 class="quote-form-title">문자로 견적 문의</h3>
+          <p class="form-lead">아래 내용을 적고 버튼을 누르면 내용이 채워진 <strong>문자 앱</strong>이 열립니다. 문자 앱에서 내용을 확인하고 보내 주세요. 적은 내용은 이 홈페이지에 저장되지 않습니다.</p>
           <div class="form-row">
-            <label for="f-name">이름</label>
-            <input id="f-name" name="name" type="text" autocomplete="name" placeholder="홍길동">
-          </div>
-          <div class="form-row">
-            <label for="f-phone">연락처</label>
-            <input id="f-phone" name="phone" type="tel" autocomplete="tel" placeholder="010-0000-0000">
+            <label for="f-name">이름 <span class="optional">(선택)</span></label>
+            <input id="f-name" name="name" type="text" autocomplete="name" maxlength="20">
           </div>
           <div class="form-grid">
             <div class="form-row">
               <label for="f-from">출발지</label>
-              <input id="f-from" name="from" type="text" placeholder="예: 서울 강남구">
+              <input id="f-from" name="from" type="text" placeholder="예: 서울 강남구" maxlength="50" required>
             </div>
             <div class="form-row">
               <label for="f-to">도착지</label>
-              <input id="f-to" name="to" type="text" placeholder="예: 경기 수원시">
+              <input id="f-to" name="to" type="text" placeholder="예: 경기 수원시" maxlength="50" required>
+            </div>
+          </div>
+          <div class="form-grid">
+            <div class="form-row">
+              <label for="f-date">이사 희망일</label>
+              <input id="f-date" name="date" type="date">
+            </div>
+            <div class="form-row">
+              <label for="f-kind">이사 종류</label>
+              <select id="f-kind" name="kind">
+                <option value="가정이사">가정이사</option>
+                <option value="원룸이사">원룸이사</option>
+                <option value="사무실이사">사무실이사</option>
+                <option value="보관이사">보관이사</option>
+              </select>
             </div>
           </div>
           <div class="form-row">
-            <label for="f-date">이사 희망일</label>
-            <input id="f-date" name="date" type="date">
-          </div>
-          <div class="form-row">
             <label for="f-memo">메모</label>
-            <textarea id="f-memo" name="memo" rows="4" placeholder="이사 종류, 짐 양, 엘리베이터 유무 등"></textarea>
+            <textarea id="f-memo" name="memo" rows="4" maxlength="300" placeholder="짐 양, 엘리베이터 유무 등"></textarea>
           </div>
-          <button type="submit" class="btn btn-primary btn-lg btn-block">견적 문의하기</button>
-          <p class="form-note">※ 이 페이지는 연습용으로, 입력한 내용은 전송되지 않습니다.</p>
+          <p id="sms-error" class="form-error" role="alert"></p>
+          <button type="submit" class="btn btn-primary btn-lg btn-block">문자로 견적 문의하기</button>
+          <p class="form-note">컴퓨터에는 문자 앱이 없어 열리지 않을 수 있습니다. 컴퓨터에서는 대표번호 <a href="tel:16617624">1661&#8209;7624</a>로 전화해 주세요.</p>
         </form>
       </div>
     </section>
@@ -292,42 +315,6 @@
   <!-- 모바일 하단 고정 전화 버튼 -->
   <a class="floating-call" href="tel:16617624">📞&nbsp;전화&nbsp;상담&nbsp;1661&#8209;7624</a>
 
-  <script>
-    (function () {
-      var form = document.getElementById("quote-form");
-      form.addEventListener("submit", function (e) {
-        e.preventDefault();
-        alert("연습용 페이지라 전송되지 않습니다.");
-      });
-
-      var input = document.getElementById("region-input");
-      var result = document.getElementById("region-result");
-      var regions = document.querySelectorAll("#region-list .region");
-      input.addEventListener("input", function () {
-        var q = input.value.replace(/\s+/g, "");
-        var count = 0;
-        regions.forEach(function (region) {
-          var name = region.querySelector("summary").textContent;
-          var items = region.querySelectorAll("li");
-          var provinceMatch = q !== "" && name.indexOf(q) !== -1;
-          var anyMatch = false;
-          items.forEach(function (li) {
-            var hit = q !== "" && (provinceMatch || li.textContent.indexOf(q) !== -1);
-            li.classList.toggle("is-match", hit && !provinceMatch);
-            if (hit) { anyMatch = true; count++; }
-          });
-          region.hidden = q !== "" && !anyMatch;
-          region.open = q === "" ? region === regions[0] : anyMatch;
-        });
-        if (q === "") {
-          result.textContent = "";
-        } else if (count > 0) {
-          result.textContent = "“" + input.value.trim() + "” 지역 이사 가능합니다. 견적 문의를 남겨 주세요.";
-        } else {
-          result.textContent = "목록에 없는 지역도 전국 어디든 상담 가능합니다. 전화로 문의해 주세요.";
-        }
-      });
-    })();
-  </script>
+  <script src="js/site.js" defer></script>
 </body>
 </html>

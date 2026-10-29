@@ -1,0 +1,11 @@
+# 로컬 실행용 예시 값입니다. 모두 가짜 값입니다.
+#   cp .dev.vars.example .dev.vars
+# 관리자 화면은 Cloudflare Access 가 붙여 주는 로그인 증명(JWT)이 있어야 열립니다.
+# 로컬(npm run dev)에서는 Access 가 없으므로 관리자 API 는 항상 거부됩니다(정상).
+# 관리자 화면 확인은 npm test(가짜 Access 로 시험) 또는 npm run screenshots 로 합니다.
+# 실제 운영 값은 이 파일이 아니라 Cloudflare 대시보드의 환경 변수로 넣습니다. README 참고.
+CF_ACCESS_TEAM_DOMAIN=test-team.cloudflareaccess.com
+CF_ACCESS_AUD=00000000000000000000000000000000ffffffffffffffffffffffffffffffff
+ADMIN_EMAIL=admin@example.com
+# 공개 후기 양식을 시험할 때만 필요. Cloudflare 공식 시험용 비밀 키(항상 통과)입니다.
+TURNSTILE_SECRET_KEY=1x0000000000000000000000000000000AA
